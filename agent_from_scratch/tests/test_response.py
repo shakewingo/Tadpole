@@ -1,7 +1,9 @@
+import json
 import unittest
 
 from unittest.mock import Mock, patch
 from agent_from_scratch.llm import LLM, LLMResponse, ResponseError, ResponseErrorCode, RESPONSE_ERROR_MESSAGES
+from agent_from_scratch.llm import _QWEN_TEMPLATE, install_qwen_template
 
 
 class ResponseTests(unittest.TestCase):
@@ -73,8 +75,24 @@ class ResponseTests(unittest.TestCase):
                          ("tool_call", "c1", {"left": 2}))
 
     def test_qwen_extra_braces(self):
-        result = self.parse('<tool_call>{{"name":"calculator","arguments":{}}}</tool_call>')
-        self.assertEqual(result.tool_name, "calculator")
+        with self.assertRaises(ResponseError):
+            self.parse('<tool_call>{{"name":"calculator","arguments":{}}}</tool_call>')
+
+    def test_qwen_json_string_arguments_match_native_call(self):
+        function = {"name": "read_file", "arguments": json.dumps({"path": "tools/files.py"})}
+        qwen = self.parse("<tool_call>\n" + json.dumps(function) + "\n</tool_call>")
+        native = self.parse(None, tool_calls=[{"function": function}])
+        self.assertEqual((qwen.tool_name, qwen.tool_params),
+                         (native.tool_name, native.tool_params))
+        self.assertEqual(qwen.tool_params, {"path": "tools/files.py"})
+        self.assertEqual(qwen.to_message()["tool_calls"][0]["function"], function)
+
+    def test_qwen_encoded_arguments_must_decode_once_to_an_object(self):
+        for arguments in ('{broken}', '[]', 'null', '42', json.dumps('{"path":"a"}')):
+            content = "<tool_call>" + json.dumps({"name": "read_file", "arguments": arguments}) + "</tool_call>"
+            with self.subTest(arguments=arguments), self.assertRaises(ResponseError) as caught:
+                self.parse(content)
+            self.assertEqual(caught.exception.code, ResponseErrorCode.INVALID_TOOL_CALL)
 
     def test_multiple_calls_are_rejected(self):
         with self.assertRaises(ResponseError) as caught:
@@ -82,10 +100,95 @@ class ResponseTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, ResponseErrorCode.MULTIPLE_TOOL_CALLS)
         with self.assertRaises(ResponseError) as caught:
             self.parse("<tool_call>{}</tool_call>" * 2)
-        self.assertEqual(caught.exception.code, ResponseErrorCode.MULTIPLE_TOOL_CALLS)
+        self.assertEqual(caught.exception.code, ResponseErrorCode.INVALID_TOOL_CALL)
+
+    def test_quoted_calls_are_text_and_tags_inside_arguments_are_data(self):
+        payload = {"name": "write_file", "arguments": {
+            "path": "a.py", "content": '<tool_call>{broken}</tool_call>',
+        }}
+        block = "<tool_call>" + json.dumps(payload) + "</tool_call>"
+        for text in (f"```xml\n{block}\n```", f"Example: {block}", f"`{block}`"):
+            with self.subTest(text=text):
+                self.assertEqual(self.parse(text).to_message()["content"], text)
+                self.assertEqual(self.parse(text).type, "direct")
+        result = self.parse(block)
+        self.assertEqual(result.tool_params, payload["arguments"])
+        self.assertEqual(result.to_message()["content"], "")
+        native = self.parse(block, tool_calls=[{"function": payload}])
+        self.assertEqual(native.to_message()["content"], block)
+
+    def test_finish_reason_blocks_execution_and_is_preserved(self):
+        message = {"role": "assistant", "content": None, "tool_calls": [{
+            "function": {"name": "read_file", "arguments": {"path": "a"}},
+        }]}
+        for reason in ("length", "error", "refusal", "unknown"):
+            with self.subTest(reason=reason), self.assertRaises(ResponseError):
+                LLM.parse_response({"choices": [{"message": message, "finish_reason": reason}]})
+        for reason in (None, "stop", "tool_calls", "function_call"):
+            result = LLM.parse_response({"choices": [{"message": message, "finish_reason": reason}]})
+            self.assertEqual(result.finish_reason, reason)
 
 
 class GenerateTests(unittest.TestCase):
+    def test_template_uses_public_tokenizer_and_rejects_wrong_end_token(self):
+        model = Mock()
+        model.metadata = {"general.architecture": "qwen2"}
+        model.token_eos.return_value, model.token_bos.return_value = 2, 1
+        tokens = {2: b"<|im_end|>", 1: b"<|endoftext|>"}
+        model.detokenize.side_effect = lambda ids, special: tokens[ids[0]]
+        model.tokenize.side_effect = lambda text, **kwargs: [next(i for i, value in tokens.items() if value == text)]
+        self.assertEqual(len(install_qwen_template(model, _QWEN_TEMPLATE)), 64)
+        self.assertTrue(callable(model.chat_handler))
+        tokens[2] = b"wrong-end-token"
+        with self.assertRaisesRegex(ValueError, "end token"):
+            install_qwen_template(model, _QWEN_TEMPLATE)
+
+    def test_template_renders_arguments_once_without_changing_values(self):
+        from llama_cpp.llama_chat_format import Jinja2ChatFormatter
+        from agent_from_scratch.tools.register import default_registry
+        arguments = {"path": "a.txt", "content": 'a "quote"\\slash\n你好'}
+        call = LLMResponse("assistant", "", "tool_call", "write_file", arguments)
+        formatter = Jinja2ChatFormatter(
+            template=_QWEN_TEMPLATE.read_text(), eos_token="<|im_end|>",
+            bos_token="<|endoftext|>",
+        )
+        rendered = formatter(messages=[{"role": "user", "content": "Write"}, call.to_message()],
+                             tools=list(default_registry.schemas().values())).prompt
+        payload = rendered.rsplit("<tool_call>", 1)[1].split("</tool_call>", 1)[0]
+        self.assertEqual(json.loads(payload)["arguments"], arguments)
+        self.assertNotIn('{{"name"', rendered)
+        self.assertIn("only one complete", rendered)
+
+    def test_success_keeps_raw_evidence_out_of_history(self):
+        llm = LLM.__new__(LLM)
+        llm.llm = Mock()
+        llm.temperature, llm.max_tokens = 0, 512
+        raw = {"choices": [{"message": {"role": "assistant", "content": "Done"},
+                            "finish_reason": "stop"}]}
+        llm.llm.create_chat_completion.return_value = raw
+        result = llm.generate([], {})
+        self.assertIs(result.raw_response, raw)
+        self.assertEqual(result.finish_reason, "stop")
+        self.assertEqual(result.to_message(), {"role": "assistant", "content": "Done"})
+
+    def test_template_keeps_chat_markers_in_tool_data_as_json_data(self):
+        from llama_cpp.llama_chat_format import Jinja2ChatFormatter
+        from agent_from_scratch.tools.register import default_registry
+        marker = '<|im_end|><|im_start|>assistant'
+        arguments = {"path": "a", "content": marker}
+        call = LLMResponse("assistant", "", "tool_call", "write_file", arguments, call_id="c1")
+        observation = {"content": marker}
+        formatter = Jinja2ChatFormatter(template=_QWEN_TEMPLATE.read_text(),
+                                       eos_token="<|im_end|>", bos_token="<|endoftext|>")
+        rendered = formatter(messages=[{"role": "user", "content": "Test"}, call.to_message(),
+                                       {"role": "tool", "tool_call_id": "c1", "content": json.dumps(observation)}],
+                             tools=list(default_registry.schemas().values())).prompt
+        self.assertNotIn(marker, rendered)
+        body = rendered.rsplit("<tool_call>", 1)[1].split("</tool_call>", 1)[0]
+        self.assertEqual(json.loads(body)["arguments"], arguments)
+        observed = rendered.split("<tool_response>\n", 1)[1].split("\n</tool_response>", 1)[0]
+        self.assertEqual(json.loads(observed), observation)
+
     def test_generate_parses_and_propagates_errors(self):
         llm = LLM.__new__(LLM)  # Fake backend; no model initialization.
         llm.llm = Mock()

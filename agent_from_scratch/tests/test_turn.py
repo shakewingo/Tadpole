@@ -6,10 +6,12 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import Mock, patch
 
-from agent_from_scratch.agent import Agent
+from agent_from_scratch.agent import Agent, recovery_feedback
 from agent_from_scratch.llm import LLM, LLMResponse, ResponseType, ResponseError, ResponseErrorCode
 from agent_from_scratch.session import SessionStore
 from agent_from_scratch.trace import RunStopReason, TraceStore
+from agent_from_scratch.tools.files import ReadFileTool, WriteFileTool
+from agent_from_scratch.tools.register import ToolRegistry
 
 
 def answer(text="Done"):
@@ -57,6 +59,84 @@ class TurnTests(unittest.TestCase):
         self.assertEqual((result.stop_reason, result.final_answer), ("final_response", "Paris"))
         self.assertEqual(len(self.seen), 1)
 
+    def test_source_examples_never_reach_tool_execution(self):
+        with TemporaryDirectory() as directory:
+            self.agent.registry = ToolRegistry([WriteFileTool(directory)])
+            block = '<tool_call>{"name":"write_file","arguments":{"path":"bad","content":"x"}}</tool_call>'
+            for text in (f"```xml\n{block}\n```", f"Example: {block}", f"`{block}`"):
+                self.script(LLM.parse_response({"choices": [{"message": {
+                    "role": "assistant", "content": text,
+                }}]}))
+                with patch.object(self.agent, "execute_tool", wraps=self.agent.execute_tool) as execute:
+                    result = self.agent.run_turn("Explain this code")
+                execute.assert_not_called()
+                self.assertEqual(result.final_answer, text)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_injected_registry_drives_schemas_execution_and_saved_observations(self):
+        with TemporaryDirectory() as directory:
+            workspace = Path(directory, "workspace")
+            workspace.mkdir()
+            (workspace / "config.txt").write_text("old.txt")
+            registry = ToolRegistry([ReadFileTool(workspace), WriteFileTool(workspace)])
+            agent = Agent(self.model, directory, registry=registry)
+            responses = iter([
+                LLMResponse(role="assistant", content="", type=ResponseType.tool_call,
+                            tool_name="read_file", tool_params={"path": "config.txt"}),
+                LLMResponse(role="assistant", content="", type=ResponseType.tool_call,
+                            tool_name="write_file", tool_params={"path": "config.txt", "content": "new.txt"}),
+                answer("Updated config.txt"),
+            ])
+
+            def generate(messages, tools):
+                self.assertEqual(set(tools), {"read_file", "write_file"})
+                return next(responses)
+
+            self.model.generate.side_effect = generate
+            result = agent.run_turn("Change the output filename", session_id="files")
+            self.assertEqual(result.stop_reason, RunStopReason.FINAL_RESPONSE)
+            self.assertEqual((workspace / "config.txt").read_text(), "new.txt")
+            observations = [json.loads(m["content"]) for m in result.messages if m["role"] == "tool"]
+            self.assertEqual(observations[0]["output"]["content"], "old.txt")
+            self.assertTrue(all(item["ok"] for item in observations))
+            for request, observation in ((result.messages[2], result.messages[3]),
+                                         (result.messages[4], result.messages[5])):
+                self.assertEqual(request["tool_calls"][0]["id"], observation["tool_call_id"])
+            saved = TraceStore(Path(directory, "runs")).load_run(result.run_id)
+            self.assertEqual(saved["messages"], result.messages)
+            self.assertEqual(SessionStore(Path(directory, "sessions")).load_history("files"),
+                             result.messages[1:])
+            self.assertFalse(agent.execute_tool("calculator", {}).ok)
+            self.assertFalse(self.agent.execute_tool("read_file", {"path": "config.txt"}).ok)
+
+    def test_empty_registry_exposes_and_executes_no_tools(self):
+        agent = Agent(self.model, registry=ToolRegistry([]))
+        self.model.generate.return_value = answer()
+        agent.run_turn("Hello")
+        self.assertEqual(self.model.generate.call_args.args[1], {})
+        self.assertFalse(agent.execute_tool("calculator", {"operation": "add", "left": 1, "right": 2}).ok)
+
+    def test_read_recovers_from_bad_argument_then_continues_to_eof(self):
+        with TemporaryDirectory() as directory:
+            (Path(directory) / "notes.txt").write_text("abcdefghij")
+            self.agent = Agent(self.model, registry=ToolRegistry([ReadFileTool(directory)]))
+
+            def read(**arguments):
+                return LLMResponse(role="assistant", content="", type=ResponseType.tool_call,
+                                   tool_name="read_file", tool_params={"path": "notes.txt", **arguments})
+
+            self.script(read(limit=4), read(chunk_size=4), read(offset=4, chunk_size=4),
+                        read(offset=8, chunk_size=4), answer("Read all notes."))
+            result = self.agent.run_turn("Read notes.txt in chunks without asking questions")
+            observations = [json.loads(m["content"]) for m in result.messages if m["role"] == "tool"]
+            self.assertEqual(observations[0]["error_code"], "invalid_arguments")
+            self.assertIn("chunk_size", observations[0]["error_message"])
+            chunks = [o["output"] for o in observations[1:]]
+            self.assertEqual("".join(c["content"] for c in chunks), "abcdefghij")
+            self.assertEqual([c["next_offset"] for c in chunks], [4, 8, None])
+            self.assertTrue(chunks[-1]["eof"])
+            self.assertEqual(result.stop_reason, RunStopReason.FINAL_RESPONSE)
+
     def test_dependent_calls_and_matching_ids(self):
         self.script(call(), call(4, 4, "multiply", "native_id"), answer("16"))
         result = self.agent.run_turn("(2+2)*4", [])
@@ -96,6 +176,29 @@ class TurnTests(unittest.TestCase):
         self.assertEqual(result.stop_reason, "max_iterations")
         self.assertIsNone(result.final_answer)
 
+    def test_identical_failures_stop_after_three_and_leave_complete_tool_pairs(self):
+        with TemporaryDirectory() as directory:
+            self.agent.state_dir = directory
+            self.script(call(left="bad"), call(left="bad"), call(left="bad"), answer("Unused"))
+            result = self.agent.run_turn("test", session_id="test")
+            self.assertEqual((result.stop_reason, len(self.seen)), ("no_progress", 3))
+            self.assertEqual(result.messages[-1]["role"], "tool")
+            self.assertEqual(SessionStore(Path(directory) / "sessions").load_history("test"), [])
+            self.assertIsNone(result.final_answer)
+
+    def test_success_resets_consecutive_failure_limit(self):
+        self.script(call(left="bad"), call(left="bad"), call(),
+                    call(left="bad"), call(left="bad"), call(), answer("4"))
+        self.assertEqual(self.agent.run_turn("test").final_answer, "4")
+
+    def test_identical_parse_errors_stop_at_three(self):
+        error = ResponseError(ResponseErrorCode.INVALID_TOOL_CALL)
+        self.script(error, error, error, answer("Unused"))
+        with patch.object(self.agent, "execute_tool") as execute:
+            result = self.agent.run_turn("test")
+        self.assertEqual((result.stop_reason, len(self.seen)), ("no_progress", 3))
+        execute.assert_not_called()
+
     def test_parse_error_is_feedback_then_corrected_without_executing_a_tool(self):
         self.script(ResponseError(ResponseErrorCode.INVALID_RESPONSE), answer("Paris"))
         with patch.object(self.agent, "execute_tool") as execute:
@@ -105,6 +208,40 @@ class TurnTests(unittest.TestCase):
         self.assertIn("could not be processed", self.seen[1][-1]["content"])
         self.assertFalse(any(message["role"] == "tool" for message in result.messages))
         self.assertEqual((result.stop_reason, result.final_answer), ("final_response", "Paris"))
+
+    def test_truncated_answer_retries_without_forcing_tools(self):
+        self.script(ResponseError(ResponseErrorCode.TRUNCATED_RESPONSE), answer("Concise summary"))
+        with patch.object(self.agent, "execute_tool") as execute:
+            result = self.agent.run_turn("Summarize the supplied text")
+        execute.assert_not_called()
+        self.assertIn("more concisely", self.seen[1][-1]["content"])
+        self.assertNotIn("Use one complete tool-call", self.seen[1][-1]["content"])
+        self.assertEqual(result.final_answer, "Concise summary")
+        self.assertIn("next necessary", recovery_feedback(ResponseError(ResponseErrorCode.MULTIPLE_TOOL_CALLS)))
+
+    def test_truncated_call_never_executes_and_keeps_finish_evidence(self):
+        raw = {"choices": [{"message": {"role": "assistant", "content":
+               '<tool_call>{"name":"write_file","arguments":{"path":"a","content":"x"}}'},
+                            "finish_reason": "length"}]}
+        try:
+            LLM.parse_response(raw)
+        except ResponseError as error:
+            error.raw_response = raw
+            self.script(error, answer("Recovered briefly"))
+        with patch.object(self.agent, "execute_tool") as execute:
+            result = self.agent.run_turn("test")
+        execute.assert_not_called()
+        self.assertEqual(result.model_requests[0].finish_reason, "length")
+        self.assertEqual(result.final_answer, "Recovered briefly")
+
+    def test_unknown_tool_can_recover_using_available_names(self):
+        unknown = call()
+        unknown.tool_name = "missing"
+        self.script(unknown, call(), answer("4"))
+        result = self.agent.run_turn("2+2")
+        failure = json.loads(self.seen[1][-1]["content"])
+        self.assertIn("calculator", failure["error_message"])
+        self.assertEqual(result.final_answer, "4")
 
     def test_repeated_parse_errors_stop_without_a_final_answer(self):
         self.agent.max_iterations = 2
@@ -123,7 +260,8 @@ class TurnTests(unittest.TestCase):
             self.agent.run_repl()
         self.assertEqual(len(self.seen), 3)
         self.assertIn("maximum iterations", output.call_args_list[0].args[0])
-        self.assertEqual(output.call_args_list[1].args[0], "Paris")
+        self.assertTrue(output.call_args_list[1].args[0].endswith(" Paris"))
+        self.assertIn("Agent:", output.call_args_list[1].args[0])
         self.assertEqual(self.seen[2], [{"role": "system", "content": "System"},
                                       {"role": "user", "content": "good"}])
 
@@ -171,7 +309,10 @@ class TurnTests(unittest.TestCase):
                 result = self.agent.run_turn("calculate", [])
             execute.assert_not_called()
             self.assertEqual(result.final_answer, "Done")
-            self.assertEqual(len(list(runs.glob("*.jsonl"))), 3)
+            self.assertEqual(len(list(runs.glob("*.jsonl"))), 4)
+            response_path = runs / result.model_requests[-1].response_file
+            self.assertEqual(json.loads(response_path.read_text())["raw_response"]["choices"][0]
+                             ["message"]["content"], "Done")
             for iteration in (1, 2):
                 event = json.loads((runs / f"{result.run_id}.parse-error-{iteration}.jsonl").read_text())
                 self.assertEqual((event["run_id"], event["iteration"]), (result.run_id, iteration))

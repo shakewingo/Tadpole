@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 from .calculator import CalculatorTool
+from .files import ListFilesTool, ReadFileTool, WriteFileTool
 from .base import Tool, ToolErrorCode, ToolResult
 from typing import Any, Dict, TYPE_CHECKING
 
@@ -29,12 +30,15 @@ class ToolRegistry:
         if tool is None:
             return ToolResult.failure(
                 ToolErrorCode.UNKNOWN_TOOL, call_id=call_id, tool_name=tool_name,
-                detail=f"Requested: {tool_name!r}.",
+                detail=f"Requested: {tool_name!r}. Available tools: {', '.join(sorted(self._tools))}.",
             )
         return tool.invoke(arguments, call_id=call_id)
 
 
 
-tools = [CalculatorTool()]
-registry = ToolRegistry(tools)
-tool_schemas = registry.schemas()
+tools = [CalculatorTool(), 
+         ListFilesTool(workspace="./agent_from_scratch"),
+         ReadFileTool(workspace="./agent_from_scratch"),
+         WriteFileTool(workspace="./agent_from_scratch")]
+default_registry = ToolRegistry(tools)
+default_tool_schemas = default_registry.schemas()

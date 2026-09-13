@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from hashlib import sha256
 from dataclasses import dataclass
 from enum import StrEnum
 import json
@@ -26,18 +27,11 @@ class LLMResponse:
     usage: dict | None = None
     call_id: str = ""
     finish_reason: str | None = None
+    raw_response: dict | None = None
 
     def to_message(self) -> ChatCompletionRequestAssistantMessage:
         if self.type == ResponseType.direct:
             return {"role": "assistant", "content": self.content}
-
-        # Keep surrounding text, but don't repeat the Qwen tool call
-        # when we represent it below as structured tool_calls.
-        content = self.content
-        if "<tool_call>" in content:
-            before, _, remaining = content.partition("<tool_call>")
-            _, _, after = remaining.partition("</tool_call>")
-            content = (before + after).strip()
 
         # parse_response() already validates the name and arguments.
         assert self.tool_name is not None
@@ -45,7 +39,7 @@ class LLMResponse:
 
         return {
             "role": "assistant",
-            "content": content,
+            "content": self.content,
             "tool_calls": [{
                 "id": self.call_id,
                 "type": "function",
@@ -63,6 +57,7 @@ class ResponseErrorCode(StrEnum):
     EMPTY_RESPONSE = "empty_response"
     TRUNCATED_RESPONSE = "truncated_response"
     MULTIPLE_TOOL_CALLS = "multiple_tool_calls"
+    UNSUPPORTED_FINISH_REASON = "unsupported_finish_reason"
 
 
 RESPONSE_ERROR_MESSAGES = {
@@ -71,6 +66,7 @@ RESPONSE_ERROR_MESSAGES = {
     ResponseErrorCode.EMPTY_RESPONSE: "Model response has no text or tool call.",
     ResponseErrorCode.TRUNCATED_RESPONSE: "Model response was truncated.",
     ResponseErrorCode.MULTIPLE_TOOL_CALLS: "Only one tool call per response is supported.",
+    ResponseErrorCode.UNSUPPORTED_FINISH_REASON: "Unsupported model finish reason.",
 }
 
 
@@ -88,6 +84,30 @@ _MODEL_PATH = (
     / "hub/models--Qwen--Qwen2.5-7B-Instruct-GGUF/snapshots/bb5d59e06d9551d752d08b292a50eb208b07ab1f"
     / "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
 )
+_QWEN_TEMPLATE = Path(__file__).parent / "prompts" / "qwen_chat.jinja"
+
+
+def install_qwen_template(model, path: Path) -> str:
+    """Install the project's checked Qwen2.5 format on this instance only."""
+    from llama_cpp.llama_chat_format import Jinja2ChatFormatter
+
+    if model.metadata.get("general.architecture") != "qwen2":
+        raise ValueError("The project chat template requires Qwen2.")
+    eos_id, bos_id = model.token_eos(), model.token_bos()
+    if min(eos_id, bos_id) < 0:
+        raise ValueError("Missing Qwen special token IDs.")
+    eos, bos = (model.detokenize([token_id], special=True).decode("utf-8")
+                for token_id in (eos_id, bos_id))
+    for token, token_id in ((eos, eos_id), (bos, bos_id)):
+        if model.tokenize(token.encode(), add_bos=False, special=True) != [token_id]:
+            raise ValueError(f"Unexpected Qwen special token: {token}")
+    template = path.read_text(encoding="utf-8")
+    if not eos or eos not in template:
+        raise ValueError("The chat template does not use this model's end token.")
+    model.chat_handler = Jinja2ChatFormatter(
+        template=template, eos_token=eos, bos_token=bos, stop_token_ids=[eos_id],
+    ).to_chat_handler()
+    return sha256(template.encode("utf-8")).hexdigest()
 
 
 class LLM:
@@ -99,6 +119,7 @@ class LLM:
         n_gpu_layers: int = -1,
         n_ctx: int = 2048,
         verbose=False,  # turn off tensor / metadata loading, prefix-match, timing info from llama-cpp-python
+        chat_template_path: str | Path | None = None,
     ):
         from llama_cpp import Llama
 
@@ -113,12 +134,17 @@ class LLM:
         self.model_path = str(model_path)
         self.n_ctx = n_ctx
         self.n_gpu_layers = n_gpu_layers
+        self.chat_template_sha256 = (install_qwen_template(self.llm, Path(chat_template_path))
+                                     if chat_template_path is not None else None)
 
     def settings(self) -> dict[str, Any]:
         """Snapshot the actual configuration used by this model instance."""
         return {"model_path": self.model_path, "temperature": self.temperature,
                 "max_tokens": self.max_tokens, "n_ctx": self.n_ctx,
-                "n_gpu_layers": self.n_gpu_layers}
+                "n_gpu_layers": self.n_gpu_layers,
+                "chat_template_sha256": getattr(self, "chat_template_sha256", None),
+                "chat_handler": "project_qwen_jinja" if getattr(self, "chat_template_sha256", None)
+                else str(self.llm.chat_format)}
 
     @staticmethod
     def read_usage(usage: Any) -> dict[str, int | None] | None:
@@ -133,10 +159,7 @@ class LLM:
 
     @staticmethod
     def parse_response(response) -> LLMResponse:
-        """
-        Example 1 w tool_calls: {'id': 'chatcmpl-xxx', 'object': 'chat.completion', 'created': 1789008759, 'model': 'qwen2.5.gguf', 'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': '<tool_call>\n{{"name": "calculator", "arguments": {"operation": "add", "left": 2, "right": 2}}}\n</tool_call>'}, 'logprobs': None, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 284, 'completion_tokens': 32, 'total_tokens': 316}}
-        Example 2 wo tool_calls: {'choices':[{'index': 0, 'message': {'role': 'assistant', 'content': 'The capital of China is Beijing.'}, 'logprobs': None, 'finish_reason': 'stop'}]}
-        """
+        """Parse native calls first, then a whole Qwen block, otherwise plain text."""
         try:
             choice = response["choices"][0]
             message = choice["message"]
@@ -144,10 +167,15 @@ class LLM:
             content = message.get("content")
         except (KeyError, IndexError, TypeError, AttributeError) as error:
             raise ResponseError(ResponseErrorCode.INVALID_RESPONSE) from error
+        if role != "assistant":
+            raise ResponseError(ResponseErrorCode.INVALID_RESPONSE, "Expected an assistant message.")
         if content is not None and not isinstance(content, str):
             raise ResponseError(ResponseErrorCode.INVALID_RESPONSE, "Content must be text or null.")
         if choice.get("finish_reason") == "length":
             raise ResponseError(ResponseErrorCode.TRUNCATED_RESPONSE)
+        if choice.get("finish_reason") not in (None, "stop", "tool_calls", "function_call"):
+            raise ResponseError(ResponseErrorCode.UNSUPPORTED_FINISH_REASON,
+                                str(choice.get("finish_reason")))
         usage = LLM.read_usage(response.get("usage"))
         calls = message.get("tool_calls")
         if calls is not None and not isinstance(calls, list):
@@ -169,7 +197,8 @@ class LLM:
                 raise ResponseError(
                     ResponseErrorCode.INVALID_TOOL_CALL, "Cannot decode native tool call."
                 ) from error
-            if not isinstance(name, str) or not isinstance(arguments, dict):
+            if (not isinstance(name, str) or not name.strip() or not isinstance(arguments, dict)
+                    or not isinstance(call_id, str)):
                 raise ResponseError(
                     ResponseErrorCode.INVALID_TOOL_CALL,
                     "Expected a string name and object arguments.",
@@ -182,13 +211,11 @@ class LLM:
                 tool_params=arguments,
                 usage=usage,
                 call_id=call_id,
+                finish_reason=choice.get("finish_reason"),
             )
         if not isinstance(content, str) or not content.strip():
             raise ResponseError(ResponseErrorCode.EMPTY_RESPONSE)
-        if "<tool_call>" in content or "</tool_call>" in content:
-            # qwen sepcific tool_call format processing
-            if content.count("<tool_call>") > 1:
-                raise ResponseError(ResponseErrorCode.MULTIPLE_TOOL_CALLS)
+        if content.strip().startswith("<tool_call>"):
             try:
                 tool_content = decode_qwen_tool_call(content)
             except ValueError as error:
@@ -199,11 +226,12 @@ class LLM:
             tool_params = tool_content.get("arguments")
             return LLMResponse(
                 role=role,
-                content=content,
+                content="",
                 type=ResponseType.tool_call,
                 tool_name=tool_name,
                 tool_params=tool_params,
                 usage=usage,
+                finish_reason=choice.get("finish_reason"),
             )
         return LLMResponse(
             role=role,
@@ -212,6 +240,7 @@ class LLM:
             tool_name=None,
             tool_params=None,
             usage=usage,
+            finish_reason=choice.get("finish_reason"),
         )
 
     def generate(
@@ -227,19 +256,21 @@ class LLM:
             max_tokens=self.max_tokens,
         )
         try:
-            return LLM.parse_response(response)
+            parsed = LLM.parse_response(response)
+            parsed.raw_response = response
+            return parsed
         except ResponseError as error:
             error.raw_response = response
             raise
 
 
 if __name__ == "__main__":
-    from .tools.register import tool_schemas
+    from .tools.register import default_tool_schemas
 
     user_input = "What is 2*2?"
-    llm = LLM()
+    llm = LLM(chat_template_path=_QWEN_TEMPLATE)
     messages: list[ChatCompletionRequestMessage] = [
         {"role": "system", "content": render_prompt("system.md")},
         {"role": "user", "content": user_input},
     ]
-    print(llm.generate(messages, tools=tool_schemas))
+    print(llm.generate(messages, tools=default_tool_schemas))

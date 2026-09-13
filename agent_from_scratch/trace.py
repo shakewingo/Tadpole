@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from loguru import logger
-from .utils import write_jsonl
+from .utils import resolve_path, write_jsonl
 
 if TYPE_CHECKING:
     from llama_cpp import ChatCompletionRequestMessage
@@ -21,6 +21,8 @@ class RunStopReason(StrEnum):
     MAX_ITERATIONS = "max_iterations"
     MODEL_ERROR = "model_error"
     INTERRUPTED = "interrupted"
+    CHECK_FAILED = "check_failed"
+    NO_PROGRESS = "no_progress"
 
 
 class ModelRequestStatus(StrEnum):
@@ -38,6 +40,8 @@ class ModelRequest:
     status: ModelRequestStatus = ModelRequestStatus.STARTED
     call_id: str | None = None
     usage: dict[str, int | None] | None = None
+    finish_reason: str | None = None
+    response_file: str | None = None
 
 
 @dataclass
@@ -54,6 +58,7 @@ class TurnResult:
     input: str = ""
     started_at: str = ""
     settings: dict[str, Any] = field(default_factory=dict)
+    completion_check: dict[str, Any] | None = None
 
 
 class TraceStore:
@@ -82,16 +87,24 @@ class TraceStore:
             "error_code": error.code, "error": str(error), "raw_response": error.raw_response,
         }, "parse-error event")
 
+    def save_model_response(self, result: TurnResult, iteration: int, response) -> str | None:
+        if self.directory is None or response.raw_response is None:
+            return None
+        filename = f"{result.run_id}.response-{iteration}.jsonl"
+        self._write(filename, {
+            "schema_version": 1, "run_id": result.run_id, "session_id": result.session_id,
+            "iteration": iteration, "finish_reason": response.finish_reason,
+            "raw_response": response.raw_response,
+        }, "model-response event")
+        return filename
+
     def load_run(self, run_id: str) -> dict | None:
         """Resolve a session's run reference. Missing evidence is explicitly unavailable."""
         if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
             raise ValueError("Invalid run ID.")
         if self.directory is None:
             return None
-        root = self.directory.resolve()
-        path = (root / f"{run_id}.jsonl").resolve()
-        if not path.is_relative_to(root):
-            raise ValueError("Run path must stay inside the trace directory.")
+        path = resolve_path(self.directory, f"{run_id}.jsonl")
         if not path.exists():
             return None
         record = json.loads(path.read_text(encoding="utf-8"))
