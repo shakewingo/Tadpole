@@ -1,7 +1,94 @@
-# Foundation dev checks
+# Tiny agent development checks
 
-The implementation checkpoint and measured limitations are in
-[FOUNDATION_CHECKPOINT.md](FOUNDATION_CHECKPOINT.md).
+Current behavior and measured limits: [FOUNDATION_CHECKPOINT.md](FOUNDATION_CHECKPOINT.md).
+
+## Stage 2B behavioral baseline and prompt comparison
+
+[BEHAVIOR_CHECKPOINT.md](BEHAVIOR_CHECKPOINT.md) records the original **8/17** baseline and
+three prompt ablations. The current full prompt scores **12/17**, retaining all original
+passes. It was selected over the shorter 12/17 candidates for fewer unintended writes and
+false claims, with a measured cost: **270.07 s / 5,060 completion tokens**, versus baseline's
+78.01 s / 1,020. The extra JSON/tool-call rules do not establish reliable web completion.
+Run from the repository root with the project's Python environment:
+
+```sh
+python -m agent_from_scratch.evals.run --output outputs/behavior-new --seed 11
+python -m agent_from_scratch.evals.run --output outputs/behavior-subset --tasks check_fix_clean,check_fix_fault
+```
+
+Runs use the current `prompts/system.md`. Prompt-comparison evidence is under
+`outputs/stage2b-prompt-20260915/`: exact prompt snapshots, all condition results/traces,
+`experiment.json`, `comparison.json` and the 118-test validation log. To reproduce an older
+condition, restore its saved `*-system.md` before starting the command and keep it fixed
+until the run ends. Use a fresh output directory; metadata records the actual prompt.
+
+`tasks.jsonl` defines prompts, fixtures, permitted tools, request budgets, fixed verifiers,
+source evidence, allowed changes and split allocation. `splits.json` assigns task skeletons
+before their paired variants; train/test names are reservations, not finished task sets.
+Each task gets a new temporary workspace and empty session state. No memory is implemented yet.
+Read results are capped at 1024 bytes in this suite; writes retain the runtime's 8192-byte cap.
+`RecordedWeb` replays extracted results, including a first-request 503. It does not exercise
+DNS/TLS/HTML parsing; the Stage 2A tool tests and live smoke cover those separately.
+
+The evaluator runs after `Agent.run_turn` returns. It checks JSON types/fields, source byte
+ranges, required execution, no-op behavior and unintended writes, including writes later
+restored. Final text follows each task's explicit format (numeric calculator answers allow
+equivalent number spelling). Per-check results distinguish formatting from missing evidence
+or incorrect artifacts. The trusted `check_fixture` command is part of the task environment;
+the independent outcome verifier never feeds back, retries, or reopens a completed turn.
+
+Evidence contains settings/source/task/split hashes, per-task schemas/fixture hashes,
+before/after snapshots, final workspaces, raw traces/session records, `results.json` and
+`summary.json`. Output must be fresh and outside the source package. Temporary paths and
+process timing vary; a greedy run is a baseline sample, not multiple independent trials.
+Missing usage stays null; invalid-call counts follow runtime error codes, so prose containing
+an unexecuted tool block can end a turn without incrementing that counter.
+
+False completion is a separate claim review: a failed task may honestly report failure.
+Create a JSON object mapping task IDs to `{"false_completion": true/false, "review_note": "evidence"}`,
+then apply it without loading the model or changing automatic outcomes:
+
+```sh
+python -m agent_from_scratch.evals.run --output outputs/behavior-new --review claim-review.json
+```
+
+This saves `review.json` and `summary-reviewed.json`; omitted tasks remain unreviewed.
+The checkpoint's claim annotations were reviewed by the assistant against saved evidence.
+Scripted reference trajectories in `tests/test_behavior_eval.py` validate all verifiers and
+failure injection. Their pass count is kept separate from real-model capability results.
+
+## Stage 2A tools
+
+Implementation, boundaries, and measured model failures: [TOOLS_CHECKPOINT.md](TOOLS_CHECKPOINT.md).
+The explicit tool demo adds `web_fetch` and `shell` to calculator/file tools:
+
+```sh
+mkdir -p outputs/tools-demo/workspace
+printf '{"output":"old.txt","retries":3}\n' > outputs/tools-demo/workspace/config.json
+python -m agent_from_scratch.examples.tools_demo \
+  --workspace outputs/tools-demo/workspace --state outputs/tools-demo/state \
+  --allow-host docs.python.org
+```
+
+Try changing `config.json`'s output to `report.txt`, then requesting `check_fixture`;
+or fetch a documentation page and ask to save a short note with its source URL.
+The shell command map lives in `examples/tools_demo.py`: `inspect_fixture` and
+`check_fixture` run the trusted `examples/fixture_command.py` outside the writable
+workspace. Web hosts are exact matches; repeat `--allow-host` to configure more.
+Both tools are synchronous. The demo requires a POSIX main thread (macOS/Linux).
+
+Reproduce the real-model tool smoke, using a new output directory each time:
+
+```sh
+python -m agent_from_scratch.evals.tools_smoke --output outputs/tools-smoke-new
+python -m agent_from_scratch.evals.tools_smoke --output outputs/tools-conversation-new --conversation
+```
+
+The first command runs three autonomous tasks; the second uses explicit user turns
+and reloads the session between them. Neither is the Stage 2B benchmark. Each saves
+actual traces and artifacts, including failed tasks and false completion claims.
+
+## Earlier foundation checks
 
 Run from the repository root in the `transformer-practice` environment:
 
@@ -10,33 +97,13 @@ python -m unittest discover -s agent_from_scratch/tests -v
 python -m agent_from_scratch.agent
 ```
 
-In the REPL, `/read llm.py` explicitly requests a full-file read and brief summary
-with a coverage check. Paths may contain spaces. A plain sentence still uses the ordinary agent
-loop: it has no automatic task-condition extraction. A successful coverage check
-does not verify the accuracy of the final summary.
+Use ordinary text, for example `Read tools/files.py` or `Read llm.py in full and briefly summarize it`.
+There is no `/read` command or runtime completion callback. Tool results automatically
+feed the next model request; a normal answer ends the turn. The model can still
+answer too early. `final_response` is a stop reason, not task success.
 
-The Python equivalent is:
-
-```python
-from pathlib import Path
-from agent_from_scratch.agent import Agent
-from agent_from_scratch.llm import LLM
-from agent_from_scratch.verification import full_file_check
-
-workspace = Path("agent_from_scratch").resolve()
-llm = LLM(temperature=0, max_tokens=2048, n_ctx=8000,
-          chat_template_path=workspace / "prompts/qwen_chat.jinja")
-agent = Agent(llm)
-result = agent.run_turn(
-    f"Read file {workspace / 'llm.py'} in full. Reply with a short summary only, without reproducing the file.",
-    completion_check=full_file_check(workspace, "llm.py"),
-)
-print(result.stop_reason, result.completion_check, result.final_answer)
-```
-
-For a real-model comparison, copy a fixed source file into a disposable workspace
-first. Keep the same fixture for every run; changing `llm.py` during implementation
-otherwise changes both the agent and the task. Use a new output directory each time:
+For a real-model check, copy a fixed source file into a disposable workspace.
+Keep the same fixture across comparisons and use a fresh output directory:
 
 ```sh
 mkdir -p outputs/foundation-demo/workspace
@@ -44,25 +111,40 @@ cp agent_from_scratch/llm.py outputs/foundation-demo/workspace/llm.py
 python -m agent_from_scratch.evals.foundation \
   --workspace outputs/foundation-demo/workspace \
   --output outputs/foundation-demo/results \
-  --cases exact,guarded,guided,partial --seeds 11,22,33 --read-bytes 8192
+  --cases exact,full,partial,edit --seeds 11 --read-bytes 8192
 ```
 
-`exact` and `guarded` use the same initial sentence. Only `guarded` attaches the
-coverage checker. `read_command` uses the REPL command's explicit full-read/brief-summary
-wording with the checker; it is a separate condition, not an unchanged-prompt comparison.
-`guided` explicitly asks for all chunks; `partial` asks for the
-first 1024 bytes. `history` adds an actual prior exchange. `edit` resets
-`config.json` inside the supplied workspace, then asks for a read/change/read-back
-task. Run `edit` only in a disposable workspace.
+Cases:
 
-`--readonly` blocks writes but keeps their schemas exposed and records attempted
-writes. For a writable dev run, `changed_files` records file hash differences.
-Changing the target aborts the remaining comparison. Output must be outside the
-workspace so recording evidence is not counted as a task side effect.
+- `exact`: `Read file <path>` without extra guidance.
+- `full`: explicitly asks to read the whole file and briefly summarize, without tool/offset instructions.
+- `guided`: explicitly instructs continuation with next_offset until eof; a separate diagnostic condition.
+- `partial`: requests only the first 1024 bytes.
+- `history`: the exact request with an actual prior conversation exchange.
+- `edit`: resets config.json, requests a change to output, then reads it back.
 
-Results contain raw model response files and run traces, fixture/template/code
-hashes, model settings, coverage, tool errors, token counts and elapsed time.
-`answer_relevant` starts as null: review the final answer against the fixture and
-save a separate review record. Do not infer overall task success from
-`final_response` or `read_coverage_passed` alone. Failed and interrupted comparisons
-are evidence too; do not overwrite them or count them as completed trials.
+All cases use the same ordinary runtime. Read coverage is scored against the frozen
+fixture only after run_turn returns. No scorer feedback reaches the model.
+The retired guarded/read_command conditions exist only in historical evidence.
+
+Run writable cases only in disposable workspaces. `--readonly` blocks writes while
+retaining schemas and recording attempts; it cannot be combined with edit.
+Output must be outside the workspace. File hashes detect side effects, and a changed
+target aborts the remaining comparison. `--read-bytes` changes the default while
+retaining the 8192-byte schema ceiling; record explicitly requested sizes when comparing.
+
+Each run is now a single `state/runs/<run_id>.jsonl` file (run schema version 2).
+Its model_requests include raw_response, status, error_code/error_message,
+finish_reason and reported usage. No success-response or parse-error side files
+are created. Session records remain version 1 and contain replayable messages,
+without raw backend envelopes. Old evidence files are not rewritten.
+
+Handled interruption saves the run; force-killing the process may lose the active
+run. state_dir=None disables persistence. Console logs describe progress; the run
+trace supplies the raw output needed to diagnose parsing failures.
+
+Results also retain fixture/template/code hashes, settings, coverage, tool errors,
+call counts, elapsed time and final artifacts. answer_relevant starts as null;
+review the final answer against the fixture separately. Coverage does not prove
+summary quality, and edit-case file-read coverage is not its task-success metric.
+Do not overwrite old experiments or aggregate trials across different revisions.
