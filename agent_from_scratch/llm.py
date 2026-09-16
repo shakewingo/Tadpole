@@ -3,11 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from collections.abc import Mapping
 from hashlib import sha256
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import json
 from typing import Dict, Any, TYPE_CHECKING, List
-from .utils import render_prompt, decode_qwen_tool_call
+
+from .config import (MAX_TOKENS, MAX_TOOL_CALLS_PER_RESPONSE, MODEL_PATH, N_CTX,
+                     N_GPU_LAYERS, QWEN_TEMPLATE, TEMPERATURE)
+from .tools.base import ToolCall
+from .utils import render_prompt, extract_qwen_tool_calls
 
 if TYPE_CHECKING:
     from llama_cpp import ChatCompletionTool, ChatCompletionRequestMessage, ChatCompletionRequestAssistantMessage
@@ -23,10 +27,8 @@ class LLMResponse:
     role: str
     content: str
     type: ResponseType
-    tool_name: str | None = None
-    tool_params: dict | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
     usage: dict | None = None
-    call_id: str = ""
     finish_reason: str | None = None
     raw_response: Mapping[str, Any] | None = None
 
@@ -34,21 +36,10 @@ class LLMResponse:
         if self.type == ResponseType.direct:
             return {"role": "assistant", "content": self.content}
 
-        # parse_response() already validates the name and arguments.
-        assert self.tool_name is not None
-        assert self.tool_params is not None
-
         return {
             "role": "assistant",
             "content": self.content,
-            "tool_calls": [{
-                "id": self.call_id,
-                "type": "function",
-                "function": {
-                    "name": self.tool_name,
-                    "arguments": json.dumps(self.tool_params),
-                },
-            }],
+            "tool_calls": [call.to_dict() for call in self.tool_calls],
         }
 
 
@@ -57,7 +48,7 @@ class ResponseErrorCode(StrEnum):
     INVALID_TOOL_CALL = "invalid_tool_call"
     EMPTY_RESPONSE = "empty_response"
     TRUNCATED_RESPONSE = "truncated_response"
-    MULTIPLE_TOOL_CALLS = "multiple_tool_calls"
+    TOO_MANY_TOOL_CALLS = "too_many_tool_calls"
     UNSUPPORTED_FINISH_REASON = "unsupported_finish_reason"
 
 
@@ -66,7 +57,7 @@ RESPONSE_ERROR_MESSAGES = {
     ResponseErrorCode.INVALID_TOOL_CALL: "Invalid tool call.",
     ResponseErrorCode.EMPTY_RESPONSE: "Model response has no text or tool call.",
     ResponseErrorCode.TRUNCATED_RESPONSE: "Model response was truncated.",
-    ResponseErrorCode.MULTIPLE_TOOL_CALLS: "Only one tool call per response is supported.",
+    ResponseErrorCode.TOO_MANY_TOOL_CALLS: f"At most {MAX_TOOL_CALLS_PER_RESPONSE} tool calls per response are supported.",
     ResponseErrorCode.UNSUPPORTED_FINISH_REASON: "Unsupported model finish reason.",
 }
 
@@ -77,15 +68,6 @@ class ResponseError(ValueError):
         self.raw_response = raw_response
         message = RESPONSE_ERROR_MESSAGES[code]
         super().__init__(f"{message} {detail}" if detail else message)
-
-
-_MODEL_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "gz-data"
-    / "hub/models--Qwen--Qwen2.5-7B-Instruct-GGUF/snapshots/bb5d59e06d9551d752d08b292a50eb208b07ab1f"
-    / "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
-)
-_QWEN_TEMPLATE = Path(__file__).parent / "prompts" / "qwen_chat.jinja"
 
 
 def install_qwen_template(model, path: Path) -> str:
@@ -114,13 +96,13 @@ def install_qwen_template(model, path: Path) -> str:
 class LLM:
     def __init__(
         self,
-        model_path: str = str(_MODEL_PATH),
-        temperature: float = 0.7,
-        max_tokens: int = 512,
-        n_gpu_layers: int = -1,
-        n_ctx: int = 2048,
+        model_path: str = str(MODEL_PATH),
+        temperature: float = TEMPERATURE,
+        max_tokens: int = MAX_TOKENS,
+        n_gpu_layers: int = N_GPU_LAYERS,
+        n_ctx: int = N_CTX,
         verbose=False,  # turn off tensor / metadata loading, prefix-match, timing info from llama-cpp-python
-        chat_template_path: str | Path | None = None,
+        chat_template_path: str | Path | None = QWEN_TEMPLATE,
     ):
         from llama_cpp import Llama
 
@@ -160,7 +142,7 @@ class LLM:
 
     @staticmethod
     def parse_response(response) -> LLMResponse:
-        """Parse native calls first, then a whole Qwen block, otherwise plain text."""
+        """Validate the entire native/Qwen batch before allowing any execution."""
         try:
             choice = response["choices"][0]
             message = choice["message"]
@@ -178,59 +160,62 @@ class LLM:
             raise ResponseError(ResponseErrorCode.UNSUPPORTED_FINISH_REASON,
                                 str(choice.get("finish_reason")))
         usage = LLM.read_usage(response.get("usage"))
+        # Generate tool content extraction
         calls = message.get("tool_calls")
         if calls is not None and not isinstance(calls, list):
             raise ResponseError(
                 ResponseErrorCode.INVALID_TOOL_CALL, "tool_calls must be a list."
             )
         if calls:
-            if len(calls) > 1:
-                raise ResponseError(ResponseErrorCode.MULTIPLE_TOOL_CALLS)
-            try:
-                call = calls[0]
-                function = call["function"]
-                arguments = function["arguments"]
-                if isinstance(arguments, str):
-                    arguments = json.loads(arguments)
-                name = function["name"]
-                call_id = call.get("id", "")
-            except (KeyError, TypeError, AttributeError, ValueError) as error:
-                raise ResponseError(
-                    ResponseErrorCode.INVALID_TOOL_CALL, "Cannot decode native tool call."
-                ) from error
-            if (not isinstance(name, str) or not name.strip() or not isinstance(arguments, dict)
-                    or not isinstance(call_id, str)):
-                raise ResponseError(
-                    ResponseErrorCode.INVALID_TOOL_CALL,
-                    "Expected a string name and object arguments.",
-                )
+            if len(calls) > MAX_TOOL_CALLS_PER_RESPONSE:
+                raise ResponseError(ResponseErrorCode.TOO_MANY_TOOL_CALLS)
+            parsed_calls = []
+            for call in calls:
+                try:
+                    function = call["function"]
+                    arguments = function["arguments"]
+                    if isinstance(arguments, str):
+                        arguments = json.loads(arguments)
+                    name = function["name"]
+                    call_id = call.get("id", "")
+                except (KeyError, TypeError, AttributeError, ValueError) as error:
+                    raise ResponseError(
+                        ResponseErrorCode.INVALID_TOOL_CALL, "Cannot decode native tool call."
+                    ) from error
+                if (not isinstance(name, str) or not name.strip() or not isinstance(arguments, dict)
+                        or not isinstance(call_id, str)):
+                    raise ResponseError(
+                        ResponseErrorCode.INVALID_TOOL_CALL,
+                        "Expected a string name, object arguments and string call ID.",
+                    )
+                if call_id and any(previous.call_id == call_id for previous in parsed_calls):
+                    raise ResponseError(ResponseErrorCode.INVALID_TOOL_CALL, "Duplicate tool-call ID.")
+                parsed_calls.append(ToolCall(name, arguments, call_id))
             return LLMResponse(
                 role=role,
                 content=content or "",
                 type=ResponseType.tool_call,
-                tool_name=name,
-                tool_params=arguments,
+                tool_calls=parsed_calls,
                 usage=usage,
-                call_id=call_id,
                 finish_reason=choice.get("finish_reason"),
             )
         if not isinstance(content, str) or not content.strip():
             raise ResponseError(ResponseErrorCode.EMPTY_RESPONSE)
-        if content.strip().startswith("<tool_call>"):
-            try:
-                tool_content = decode_qwen_tool_call(content)
-            except ValueError as error:
-                raise ResponseError(
-                    ResponseErrorCode.INVALID_TOOL_CALL, str(error)
-                ) from error
-            tool_name = tool_content.get("name")
-            tool_params = tool_content.get("arguments")
+        try:
+            # Specific tool extraction case for qwen model
+            extracted, narration = extract_qwen_tool_calls(content)
+        except ValueError as error:
+            raise ResponseError(
+                ResponseErrorCode.INVALID_TOOL_CALL, str(error)
+            ) from error
+        if len(extracted) > MAX_TOOL_CALLS_PER_RESPONSE:
+            raise ResponseError(ResponseErrorCode.TOO_MANY_TOOL_CALLS)
+        if extracted:
             return LLMResponse(
                 role=role,
-                content="",
+                content=narration,
                 type=ResponseType.tool_call,
-                tool_name=tool_name,
-                tool_params=tool_params,
+                tool_calls=[ToolCall(call["name"], call["arguments"]) for call in extracted],
                 usage=usage,
                 finish_reason=choice.get("finish_reason"),
             )
@@ -238,8 +223,6 @@ class LLM:
             role=role,
             content=content,
             type=ResponseType.direct,
-            tool_name=None,
-            tool_params=None,
             usage=usage,
             finish_reason=choice.get("finish_reason"),
         )
@@ -268,12 +251,16 @@ class LLM:
             error.raw_response = response
             raise
 
+    def close(self) -> None:
+        """Release native model resources before interpreter shutdown."""
+        self.llm.close()
+
 
 if __name__ == "__main__":
     from .tools.register import default_tool_schemas
 
     user_input = "What is 2*2?"
-    llm = LLM(chat_template_path=_QWEN_TEMPLATE)
+    llm = LLM()
     messages: list[ChatCompletionRequestMessage] = [
         {"role": "system", "content": render_prompt("system.md")},
         {"role": "user", "content": user_input},
