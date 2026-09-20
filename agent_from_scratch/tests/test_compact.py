@@ -116,8 +116,8 @@ class CompactTests(unittest.TestCase):
                                     [message("user", "old"), message("assistant", "x" * 400)])
             summary, actor = result.model_requests
             assert actor.input_messages is not None
-            self.assertIn("Revised workspace rule.", actor.input_messages[0]["content"])
-            self.assertIn("Original workspace rule.", result.messages[0]["content"])
+            self.assertIn("Revised workspace rule.", str(actor.input_messages[0].get("content")))
+            self.assertIn("Original workspace rule.", str(result.messages[0].get("content")))
             assert summary.instructions is not None
             self.assertEqual(summary.instructions["sources"][-1]["status"], "loaded")
 
@@ -342,8 +342,101 @@ class CompactTests(unittest.TestCase):
             "Use 7, not 6.", deepcopy(self.raw[1:3]))
         feedback = [m for m in result.messages if "[Runtime feedback]" in str(m.get("content"))]
         self.assertEqual(len(feedback), 1)
-        self.assertIn("cut off", str(feedback[0]["content"]))
+        self.assertIn("cut off", str(feedback[0].get("content")))
         self.assertFalse(any(m.get("role") == "tool" for m in result.messages))
+
+    def test_completed_compacted_turn_saves_a_checkpoint_after_its_raw_delta(self):
+        with TemporaryDirectory() as directory:
+            self.pressure = True
+            self.model.generate.side_effect = [answer("Goal: report 7."), answer("7")]
+            agent = Agent(self.model, directory, registry=ToolRegistry([]))
+            # A checkpoint may only cover messages the session itself holds, so replay the
+            # REPL's flow: earlier turns are on disk before this one runs.
+            store = SessionStore(Path(directory, "sessions"))
+            store.append("cp", "earlier", deepcopy(self.raw[1:3]))
+            result = agent.run_turn("Use 7, not 6.", store.load_history("cp"), session_id="cp")
+            lines = Path(directory, "sessions", "cp.jsonl").read_text().splitlines()
+            earlier, turn, checkpoint = (json.loads(line) for line in lines)
+            self.assertNotIn("kind", turn)
+            self.assertEqual(checkpoint["kind"], "checkpoint")
+            self.assertEqual(checkpoint["run_id"], result.run_id)
+            # covered counts session messages: one less than ContextState.covered.
+            self.assertEqual(checkpoint["covered"], 2)
+            self.assertEqual(store.load_checkpoint("cp", store.load_history("cp")), checkpoint)
+            self.assertEqual(len(checkpoint["config"]["compact_prompt_sha256"]), 64)
+
+    def test_checkpoint_is_refused_when_history_was_never_saved(self):
+        with TemporaryDirectory() as directory:
+            self.pressure = True
+            self.model.generate.side_effect = [answer("Goal: report 7."), answer("7")]
+            agent = Agent(self.model, directory, registry=ToolRegistry([]))
+            # Library callers may pass history the store does not hold; a checkpoint over it
+            # could never be replayed, so none is written and the raw turn is still saved.
+            result = agent.run_turn("Use 7, not 6.", deepcopy(self.raw[1:3]), session_id="cp")
+            self.assertEqual(result.stop_reason, "final_response")
+            store = SessionStore(Path(directory, "sessions"))
+            self.assertEqual(len(store.load_history("cp")), 2)
+            self.assertIsNone(store.load_checkpoint("cp", store.load_history("cp")))
+
+    def test_restart_replays_summary_and_uncovered_suffix(self):
+        with TemporaryDirectory() as directory:
+            self.pressure = True
+            self.model.generate.side_effect = [answer("Goal: report 7."), answer("7")]
+            store = SessionStore(Path(directory, "sessions"))
+            store.append("cp", "earlier", deepcopy(self.raw[1:3]))
+            Agent(self.model, directory, registry=ToolRegistry([])).run_turn(
+                "Use 7, not 6.", store.load_history("cp"), session_id="cp")
+            # A fresh store and agent stand in for a restarted process.
+            reopened = SessionStore(Path(directory, "sessions"))
+            history = reopened.load_history("cp")
+            checkpoint = reopened.load_checkpoint("cp", history)
+            assert checkpoint is not None
+            self.pressure = False
+            self.model.generate.side_effect = [answer("Still 7.")]
+            restarted = Agent(self.model, directory, registry=ToolRegistry([]))
+            result = restarted.run_turn("What is the limit?", history, session_id="cp",
+                                        checkpoint=checkpoint)
+            actor = result.model_requests[0]
+            assert actor.input_messages is not None
+            self.assertTrue(actor.input_messages[1]["content"].startswith("[Conversation summary:"))
+            self.assertEqual(actor.input_messages[-1]["content"], "What is the limit?")
+            # Raw history is replayed in full; only the model-facing view is shortened.
+            self.assertEqual(result.messages[1:1 + len(history)], history)
+            self.assertLess(len(actor.input_messages), 2 + len(history))
+            self.assertEqual(result.settings["checkpoint"]["covered"], checkpoint["covered"])
+
+    def test_stale_checkpoint_falls_back_to_raw_history(self):
+        with TemporaryDirectory() as directory:
+            self.pressure = True
+            self.model.generate.side_effect = [answer("Goal: report 7."), answer("7")]
+            store = SessionStore(Path(directory, "sessions"))
+            store.append("cp", "earlier", deepcopy(self.raw[1:3]))
+            Agent(self.model, directory, registry=ToolRegistry([])).run_turn(
+                "Use 7, not 6.", store.load_history("cp"), session_id="cp")
+            edited = store.load_history("cp")
+            edited[0] = message("user", "EDITED")
+            self.assertIsNone(store.load_checkpoint("cp", edited))
+
+    def test_incomplete_turn_saves_no_checkpoint(self):
+        with TemporaryDirectory() as directory:
+            self.pressure = True
+            self.model.generate.side_effect = ResponseError(ResponseErrorCode.EMPTY_RESPONSE)
+            Agent(self.model, directory, registry=ToolRegistry([])).run_turn(
+                "Use 7, not 6.", deepcopy(self.raw[1:3]), session_id="cp")
+            self.assertIsNone(SessionStore(Path(directory, "sessions")).load_checkpoint("cp", []))
+
+    def test_checkpoint_write_failure_leaves_the_saved_turn_intact(self):
+        with TemporaryDirectory() as directory:
+            self.pressure = True
+            self.model.generate.side_effect = [answer("Goal: report 7."), answer("7")]
+            agent = Agent(self.model, directory, registry=ToolRegistry([]))
+            with patch("agent_from_scratch.session.SessionStore.append_checkpoint",
+                       side_effect=OSError("disk full")):
+                result = agent.run_turn("Use 7, not 6.", deepcopy(self.raw[1:3]), session_id="cp")
+            self.assertEqual(result.stop_reason, "final_response")
+            store = SessionStore(Path(directory, "sessions"))
+            self.assertEqual(len(store.load_history("cp")), 2)
+            self.assertIsNone(store.load_checkpoint("cp", store.load_history("cp")))
 
     def test_failed_compaction_with_room_left_does_not_end_the_turn(self):
         """A manual compact must not kill a turn that the budget can still serve."""
