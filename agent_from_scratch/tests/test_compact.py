@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 from agent_from_scratch.agent import Agent
 from agent_from_scratch.config import AgentLimits
 from agent_from_scratch.compact import CompactOutcome, Compactor
-from agent_from_scratch.context import ContextState
+from agent_from_scratch.context import ContextState, InstructionConfig
 from agent_from_scratch.evals.verify import metrics
 from agent_from_scratch.llm import LLM, ResponseError, ResponseErrorCode
 from agent_from_scratch.session import SessionStore
@@ -93,6 +93,43 @@ class CompactTests(unittest.TestCase):
         self.assertFalse(self.compact())
         self.assertEqual(len(self.requests), 1)
         self.model.generate.assert_not_called()
+
+    def test_compact_publishes_reloaded_rules_without_editing_raw(self):
+        with TemporaryDirectory() as directory:
+            rules = Path(directory, "AGENTS.md")
+            rules.write_text("Original workspace rule.")
+            agent = Agent(self.model, None, registry=ToolRegistry([]),
+                          instruction_config=InstructionConfig(workspace=Path(directory)))
+            self.model.generate.side_effect = [answer("Goal: report 7."), answer("7")]
+            seen_first = False
+
+            def rewrite(messages, schemas, **kwargs):
+                nonlocal seen_first
+                if not seen_first:
+                    seen_first = True
+                    rules.write_text("Revised workspace rule.")
+                return self.measure(messages, schemas)
+
+            self.pressure = True
+            self.model.measure_context.side_effect = rewrite
+            result = agent.run_turn("Use 7, not 6.",
+                                    [message("user", "old"), message("assistant", "x" * 400)])
+            summary, actor = result.model_requests
+            assert actor.input_messages is not None
+            self.assertIn("Revised workspace rule.", actor.input_messages[0]["content"])
+            self.assertIn("Original workspace rule.", result.messages[0]["content"])
+            assert summary.instructions is not None
+            self.assertEqual(summary.instructions["sources"][-1]["status"], "loaded")
+
+    def test_failed_reload_keeps_the_turn_snapshot_and_records_the_error(self):
+        compactor = Compactor(self.model, self.limits,
+                              reload_instructions=lambda: (None, {"status": "error",
+                                                                  "detail": "unreadable"}))
+        self.assertIs(compactor.attempt(self.state, {}, self.requests, 1),
+                      CompactOutcome.APPLIED)
+        self.assertIsNone(self.state.instructions)
+        assert self.requests[0].instructions is not None
+        self.assertEqual(self.requests[0].instructions["status"], "error")
 
     def test_summary_uses_its_own_output_reserve(self):
         self.limits = replace(AgentLimits(), summary_max_tokens=128)
@@ -265,8 +302,48 @@ class CompactTests(unittest.TestCase):
                 self.assertEqual([q.purpose for q in result.model_requests], ["agent", "compact", "agent"])
                 self.assertEqual(seen[-1][-1], result.messages[-2])
                 self.assertEqual(result.model_requests[1].last_sent_boundary, 4)
+                # Compaction changes the view, never the turn's identity or its counters.
+                self.assertEqual([q.iteration for q in result.model_requests], [1, 2, 2])
+                self.assertIs(agent.registry, agent.registry)
+                self.assertTrue(all(i.startswith(result.run_id)
+                                    for q in result.model_requests for i in q.call_ids))
                 if not parse_error:
                     self.assertEqual(Path(directory, "done.txt").read_text(), "once")
+
+    def test_parser_feedback_survives_compaction_and_stays_unsent(self):
+        self.raw.extend(exchange("old") + exchange("recent"))
+        self.raw.append(message("user", "[Runtime feedback] The output was cut off."))
+        self.state.last_sent = len(self.raw) - 1
+        self.assertTrue(self.compact())
+        self.assertIn(self.raw[-1], self.state.messages())
+        self.assertGreaterEqual(self.state.last_sent, self.state.covered)
+
+    def test_failing_summarizer_preserves_raw_evidence_and_saves_no_session(self):
+        with TemporaryDirectory() as directory:
+            self.pressure = True
+            self.model.generate.side_effect = ResponseError(ResponseErrorCode.EMPTY_RESPONSE)
+            agent = Agent(self.model, directory, registry=ToolRegistry([]))
+            raw_before = deepcopy(self.raw[1:3])
+            result = agent.run_turn("Use 7, not 6.", raw_before, session_id="failing")
+            self.assertEqual(result.stop_reason, "context_limit")
+            self.assertEqual(result.messages[1:3], raw_before)
+            self.assertEqual(self.state.summary, "")
+            self.assertEqual(SessionStore(Path(directory, "sessions")).load_history("failing"), [])
+
+    def test_truncated_response_under_pressure_executes_nothing(self):
+        self.pressure = True
+        self.model.generate.side_effect = [
+            answer("Goal: continue."),
+            ResponseError(ResponseErrorCode.TRUNCATED_RESPONSE),
+            answer("Done."),
+        ]
+        registry = ToolRegistry([])
+        result = Agent(self.model, None, registry=registry).run_turn(
+            "Use 7, not 6.", deepcopy(self.raw[1:3]))
+        feedback = [m for m in result.messages if "[Runtime feedback]" in str(m.get("content"))]
+        self.assertEqual(len(feedback), 1)
+        self.assertIn("cut off", str(feedback[0]["content"]))
+        self.assertFalse(any(m.get("role") == "tool" for m in result.messages))
 
     def test_failed_compaction_with_room_left_does_not_end_the_turn(self):
         """A manual compact must not kill a turn that the budget can still serve."""
