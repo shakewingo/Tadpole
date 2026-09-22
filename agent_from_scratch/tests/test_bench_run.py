@@ -99,5 +99,41 @@ class RunFrameworkTests(unittest.TestCase):
             skeletons.SKELETONS[:] = original
 
 
+class DispatcherTests(unittest.TestCase):
+    def test_bench_is_a_registered_command(self):
+        from agent_from_scratch.evals.__main__ import COMMANDS
+        self.assertEqual(COMMANDS["bench"], "bench.run")
+
+
+class FinalGuardTests(unittest.TestCase):
+    def test_split_test_without_final_is_rejected(self):
+        import sys
+        from agent_from_scratch.evals.bench.run import main
+        old_argv = sys.argv
+        sys.argv = ["bench", "--output", "/tmp/should-not-be-created", "--split", "test"]
+        try:
+            with self.assertRaises(SystemExit):
+                main()
+        finally:
+            sys.argv = old_argv
+
+    def test_drift_without_allow_drift_is_rejected(self):
+        import sys
+        from unittest.mock import patch
+        from agent_from_scratch.evals.bench.run import main
+        old_argv = sys.argv
+        sys.argv = ["bench", "--output", "/tmp/should-not-be-created-2", "--split", "test", "--final"]
+        try:
+            # Patch where manifest_drift is defined: `main()` does `from .manifest import
+            # manifest_drift` fresh on every call, so the patched module attribute is what
+            # it picks up, with no need for run.py to import manifest.py at module level.
+            with patch("agent_from_scratch.evals.bench.manifest.manifest_drift",
+                      return_value={"memory": ("off", "on")}):
+                with self.assertRaises(SystemExit):
+                    main()
+        finally:
+            sys.argv = old_argv
+
+
 if __name__ == "__main__":
     unittest.main()
