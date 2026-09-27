@@ -42,7 +42,7 @@ as pilots; mark missing required outcomes incomplete instead of silently extendi
 | Completed | **2 — implementation complete** | General filesystem/shell/search/fetch; restricted 2B baseline 8/17 → 12/17 |
 | Completed | **3 — implementation complete** | Context budgeting, automatic/manual compact, rule reload at the boundary, versioned checkpoints and restart replay; real-model evidence for 3B items 2-4 and 3C still outstanding |
 | Deferred past 11 | **4A–4B — deferred (decided September 22, 2026)** | Bounded durable memory, search/read, correction/forget, fresh-session recall |
-| In progress | **8 — benchmark, protocol and vLLM backend frozen; control-checkpoint baseline run pending a GPU session** | Resettable benchmark, isolated splits, measured baseline, frozen harness |
+| Completed | **8 — complete: frozen benchmark and protocol, Qwen3-4B control baseline (test mean pass@1 0.667)** | Resettable benchmark, isolated splits, measured baseline, frozen harness |
 | Research | **9 — draft, required outcome** | 3–4B HF checkpoint on vLLM → verified trajectories → QLoRA SFT/reload → base/adapter comparison |
 | Later experiment | **10 — draft, conditional** | 2–3 rounds of expert iteration (weak-RSI question); GRPO pilot only if justified |
 | Delivery | **11 — draft, required outcome** | Held-out paired results and reproducible demo; dev-only recipe search optional |
@@ -204,7 +204,7 @@ Our `SessionStore` keeps that distinction without Nanobot's channels, hooks, or 
 
 **Completion boundary:** Stage 1 is complete for this rescope; context management remains
 Stage 3. Persistence is single-writer and saved at turn end, without exact mid-turn crash resume.
-The [foundation checkpoint](checkpoints/FOUNDATION_CHECKPOINT.md) records 82 deterministic tests
+The foundation checkpoint (a working record, not in the published docs) recorded 82 deterministic tests
 and real-model smoke results; those are historical evidence, not tests rerun by this document edit.
 A terminal answer still does not prove task success; premature stopping is an observed model gap.
 
@@ -238,7 +238,7 @@ Prompt rules describe expected behavior; runtime enforces paths, allowed operati
   On interruption, record a pending call as interrupted/unknown if no result exists;
   never imply it succeeded or automatically replay its side effects. Keep the REPL usable.
 
-Evidence: [tools checkpoint](checkpoints/TOOLS_CHECKPOINT.md). The initial restricted 2A
+Evidence: the tools checkpoint (a working record, not in the published docs). The initial restricted 2A
 implementation had 102 tests; the general-tool follow-up has separate mechanism/live checks.
 The fixed 2B suite below remains the historical behavioral baseline.
 
@@ -261,7 +261,7 @@ No async runtime, provider catalogue or interactive approval engine is added.
   unintended writes, requests/usage/latency, settings and code/fixture hashes. Missing usage
   stays unknown. Train/test skeletons are reserved; their task sets are not yet generated.
 
-**Evidence:** [2B checkpoint](checkpoints/BEHAVIOR_CHECKPOINT.md), **118 tests**, 17/17 scripted
+**Evidence:** the 2B checkpoint (a working record, not in the published docs), **118 tests**, 17/17 scripted
 solutions; prompt ablations improve **8/17 → 12/17 strict passes**, retaining all original passes.
 The full prompt fixes no-op behavior; nested edits, web JSON/recovery and two answer formats
 still fail. Two false claims and one unintended-write task remain. The selected prompt trades
@@ -313,7 +313,6 @@ complete; **no local-model diagnostic was run for 3B items 2-4 or 3C** because t
   or imports; the prompt prohibits autonomous rule edits. Defaults are 8 KiB/source and
   16 KiB assembled, with visible setup errors instead of silent omission/truncation.
   **178 deterministic tests pass**; source metadata lives in the existing run settings.
-  Implementation guide: [Stage 3A item 2 plan](STAGE3A_ITEM2_PLAN.md).
 - [x] Count the actual formatted prompt, including schemas/role markers, with the generation
   formatter and tokenizer. Record total prompt tokens, effective backend window, configured
   response reserve and remaining room in request traces; no new CLI command. Custom or
@@ -514,8 +513,7 @@ concurrent writes. Nanobot reference: [restricted subagent][nb-child]; this desi
 
 Build on Stage 2 after Stage 3. 4A–4B is deferred past Stage 11 (above), so this stage proceeds
 without it, freezing `memory: off`. The local workspace is a learning benchmark, not a domain product.
-Implementation: [docs/STAGE8_DESIGN.md](STAGE8_DESIGN.md) and its
-[implementation plan](STAGE8_PLAN.md); results in `docs/benchmark.md`.
+Design: [docs/STAGE8_DESIGN.md](STAGE8_DESIGN.md); results in `docs/benchmark.md`.
 
 - [x] Cover inspection/reporting, constrained updates, recovery/verification, and appropriate
   stopping with roughly 2–6 dependent tool interactions. Vary layout, distractors, values,
@@ -550,16 +548,28 @@ Implementation: [docs/STAGE8_DESIGN.md](STAGE8_DESIGN.md) and its
   `llm.VLLMClient` renders the project template itself and parses raw text through
   `LLM.parse_response`, so training examples can later be exported token-identically; the GGUF
   path stays for tests and local pipeline checks. `aggregate` combines the k runs.
-- [ ] Run the intended trainable checkpoint as the base control: on a rented GPU, validate the
+- [x] Run the intended trainable checkpoint as the base control: on a rented GPU, validate the
   template/parser/measurement on the live server, run dev × 3 seeds (fix and re-freeze if that
   surfaces a harness bug), then test × 3 seeds once under the final freeze. Primary weight
   comparisons use short tasks and disabled or identical read-only memory; no cross-task
   accumulation or evaluator coaching. For long-context comparisons, hold the summarizer
-  checkpoint/config fixed. Runbook in `docs/benchmark.md`.
+  checkpoint/config fixed. Done September 27 on a RunPod A40 ($0.35): measurement exact on all
+  1,496 requests, no dev harness bug, test **mean pass@1 0.667** (pass^k 0.583), dev 0.542;
+  stopping is 0.00 on test. Results and the runbook as run are in `docs/benchmark.md`; per-task
+  pass counts are in `docs/baselines/stage8-control/`.
 
 **Gate/output:** scripted valid solutions pass and fake “done” outputs fail; real-model baseline
 includes interpretable failures. Save task-level results and a frozen manifest in `docs/benchmark.md`.
 Fix protocol/evaluator bugs before training; do not require the base model to solve every task.
+
+### Stage 8 extra — Telegram bot deployment · optional, outside the sprint gate
+
+Decided September 22. A side experiment, not a Stage 8 gate item and not part of the Stage
+9–11 training line: run the existing agent as a long-lived process reachable from a phone over
+Telegram, so the loop/tools/memory work can be poked at outside a terminal session. Keeps the
+local Qwen2.5-7B GGUF backend and `Agent.run_turn`/`SessionStore` unchanged; adds one new
+long-polling module and a launchd job on an always-on Mac mini, since this laptop cannot stay
+powered on. Design: [telegram-bot-design.md](superpowers/specs/2026-09-22-telegram-bot-design.md).
 
 ### Post-training plan for Stages 9–11 (decided September 21)
 
@@ -623,7 +633,10 @@ the attribution would be muddled.
 
 **Required outcome.** It starts from Stage 8's frozen protocol and its control-checkpoint
 baseline (the vLLM backend and that baseline run moved into Stage 8 on September 26, so the
-benchmark is comparable before any training starts).
+benchmark is comparable before any training starts). Adapter runs reuse the baseline's exact
+server command (`docs/benchmark.md` runbook, including `VLLM_USE_FLASHINFER_SAMPLER=0`) and are
+paired by task ID against `docs/baselines/stage8-control/`. The baseline names the targets:
+stopping (0.00 on test), reading before answering, and acting on error feedback.
 
 - [ ] Write the train-skeleton task generator, with fault injection for recovery cases. Reserve
   the test skeletons first.
@@ -686,10 +699,11 @@ The capped memory index remains planned Stage 4 work.
 
 **Next coding session:** run `examples/continuation_demo.py` and `examples/compact_demo.py`
 on a host that can hold the 7B weights, and record the retained/lost facts in
-[context-memory.md](context-memory.md); that is Stage 3's one outstanding gap. The Stage 8
-benchmark, its sampled protocol and the vLLM backend are frozen; finish Stage 8 with the GPU
-session in `docs/benchmark.md` (live template check, dev × 3, then test × 3 on
-Qwen3-4B-Instruct-2507), then start Stage 9's train-skeleton generator. For each session record: what I built, what I broke,
+[context-memory.md](context-memory.md); that is Stage 3's one outstanding gap. Stage 8 is
+complete: the benchmark and protocol are frozen and the Qwen3-4B control baseline is recorded
+(`docs/benchmark.md`). Start Stage 9 with the train-skeleton generator: new shapes that exercise
+the baseline's weak skills (exact stop replies, reading the file before reporting, using error
+feedback) without copying any dev or test skeleton. For each session record: what I built, what I broke,
 what the evidence shows, what I can explain unaided, and the next smallest gap.
 
 [ch1]: ../../../harness-books/book1-claude-code/chapter-01-why-harness-engineering.md
