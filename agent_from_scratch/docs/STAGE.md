@@ -43,9 +43,9 @@ as pilots; mark missing required outcomes incomplete instead of silently extendi
 | Completed | **3 — implementation complete** | Context budgeting, automatic/manual compact, rule reload at the boundary, versioned checkpoints and restart replay; real-model evidence for 3B items 2-4 and 3C still outstanding |
 | Deferred past 11 | **4A–4B — deferred (decided September 22, 2026)** | Bounded durable memory, search/read, correction/forget, fresh-session recall |
 | Completed | **8 — complete: frozen benchmark and protocol, Qwen3-4B control baseline (test mean pass@1 0.667)** | Resettable benchmark, isolated splits, measured baseline, frozen harness |
-| Research | **9 — in progress, required outcome** | LoRA SFT of the 4B student on train tasks and public data, chosen on val, reported once on test and an external benchmark; Items 1–3 done |
+| Research | **9 — in progress, required outcome** | LoRA SFT of the 4B student on train tasks and public data, chosen on val, reported once on test and an external benchmark; Items 1–4 done |
 | Later experiment | **10 — draft, conditional** | 2–3 rounds of expert iteration (weak-RSI question); GRPO pilot as a second arm from M1 if M1's samples meet its go conditions |
-| Delivery | **11 — draft, required outcome** | Held-out paired results and reproducible demo; dev-only recipe search optional |
+| Delivery | **11 — draft, required outcome** | Held-out paired results and reproducible demo; val-only recipe search optional |
 | Future branches | **4C / 5 / 6 / 7 — optional** | Dream / skills and MCP / jobs / child agent and planning |
 
 Numbering follows the scratch notes: old Stage 1.1 is now Stage 1; old 1.2 tools move
@@ -221,7 +221,7 @@ Prompt rules describe expected behavior; runtime enforces paths, allowed operati
   targeted `edit_file`. Support general local paths, optional confinement, continuation,
   atomic replacement, mode preservation and optional version checks. Read PDF/Office text
   through `file_documents.py`; images expose metadata only. The original confined byte-based
-  tools (`evals/legacy_files.py`) served the Stage 2B `dev` suite until both were retired after
+  tools (`evals/legacy_files.py`) served the Stage 2B suite until both were retired after
   Stage 8; they remain in git history at `ce2111a`.
 - [x] **`tools/web.py`:** synchronous general HTTP/HTTPS `web_fetch(url, extract_mode?)`
   with compressed responses and main-content or navigation-inclusive HTML text extraction,
@@ -251,7 +251,7 @@ No async runtime, provider catalogue or interactive approval engine is added.
 
 ### 2B — first behavioral baseline · complete
 
-- [x] `evals/run.py` + `verify.py` reuse foundation read-coverage checks. **17 dev tasks**
+- [x] `evals/run.py` + `verify.py` reuse foundation read-coverage checks. **17 Stage 2B tasks**
   cover dependent inspection, constrained changes, matched recovery, stopping and calculator.
   Rows specify prompt, fixture, tools, budget, verifier, evidence/constraints and split.
 - [x] Allocate skeletons before variants; use fresh temporary files and session state per run.
@@ -267,7 +267,7 @@ The full prompt fixes no-op behavior; nested edits, web JSON/recovery and two an
 still fail. Two false claims and one unintended-write task remain. The selected prompt trades
 fewer side effects than shorter candidates for higher generation cost: 78 → 270 seconds.
 Bad arguments/blocked commands and follow-up/reload/reset have scripted regression coverage;
-real dev tasks exercise path denial, fetch failure and timeout. Fake “done” artifacts fail.
+real Stage 2B tasks exercise path denial, fetch failure and timeout. Fake “done” artifacts fail.
 Implementation/baseline are complete; reliable autonomous completion remains a measured goal.
 
 **September 16 handoff review:** all **167 deterministic tests pass** in
@@ -505,7 +505,7 @@ restart demos. No daemon/distributed scheduler. Nanobot reference: [cron service
 Keep synchronous `delegate(task)` using the same loop, fresh context, read-only tools, depth one,
 four child steps, and at most two delegations. Link child/parent traces and charge shared budgets;
 parent owns synthesis and the final answer. Compare direct vs inspect/edit/check plan, then
-parent-only vs child-assisted runs separately on the same six dev tasks. **Gate:** useful evidence
+parent-only vs child-assisted runs separately on the same six val tasks. **Gate:** useful evidence
 returns; prohibited writes/recursive delegation never execute; exhaustion is visible. No teams or
 concurrent writes. Nanobot reference: [restricted subagent][nb-child]; this design stays synchronous.
 
@@ -518,16 +518,16 @@ Design: [docs/STAGE8_DESIGN.md](STAGE8_DESIGN.md); results in `docs/benchmark.md
 - [x] Cover inspection/reporting, constrained updates, recovery/verification, and appropriate
   stopping with roughly 2–6 dependent tool interactions. Vary layout, distractors, values,
   dependency chains, and fault positions; allow multiple valid solutions. 18 generated skeletons
-  (8 dev, 10 test), any valid tool path passes; every skeleton that edits a file offers
+  (8 val, 10 test), any valid tool path passes; every skeleton that edits a file offers
   `edit_file` beside `write_file` (except `flaky_write_retry`, whose fault targets `write_file`).
-- [x] Keep train, dev, and final test isolated by task skeleton before creating variants;
-  reset workspace/session/memory per task. Start from the 12–20 dev cases; target 50–100 reserved
+- [x] Keep train, val, and final test isolated by task skeleton before creating variants;
+  reset workspace/session/memory per task. Start from the 12–20 val cases; target 50–100 reserved
   final cases if affordable, explicitly labelling smaller samples as pilots. A public benchmark
   subset is optional; identify adaptations and never present a local score as its official score.
   60 reserved test tasks, `evals/bench/splits.json` fixed before any test skeleton was
-  implemented. Dev began at 15 tasks and was expanded to 64 (four more skeletons, one per
+  implemented. Val began at 15 tasks and was expanded to 64 (four more skeletons, one per
   family, and more seeds) after the 7B pilot, so checkpoint selection in Stages 9–11 has enough
-  dev tasks. Each task gets a fresh temporary workspace and no memory.
+  val tasks. Each task gets a fresh temporary workspace and no memory.
 - [x] Verify final artifacts/constraints independently. Report counts/denominators, false
   completion, invalid calls, matched-fault recovery, stopping, tokens, requests, latency, and cost.
   Keep long-session/compact/restart and delayed-memory recall in separate harness evaluations.
@@ -549,12 +549,12 @@ Design: [docs/STAGE8_DESIGN.md](STAGE8_DESIGN.md); results in `docs/benchmark.md
   `LLM.parse_response`, so training examples can later be exported token-identically; the GGUF
   path stays for tests and local pipeline checks. `aggregate` combines the k runs.
 - [x] Run the intended trainable checkpoint as the base control: on a rented GPU, validate the
-  template/parser/measurement on the live server, run dev × 3 seeds (fix and re-freeze if that
+  template/parser/measurement on the live server, run val × 3 seeds (fix and re-freeze if that
   surfaces a harness bug), then test × 3 seeds once under the final freeze. Primary weight
   comparisons use short tasks and disabled or identical read-only memory; no cross-task
   accumulation or evaluator coaching. For long-context comparisons, hold the summarizer
   checkpoint/config fixed. Done September 27 on a RunPod A40 ($0.35): measurement exact on all
-  1,496 requests, no dev harness bug, test **mean pass@1 0.667** (pass^k 0.583), dev 0.542;
+  1,496 requests, no val harness bug, test **mean pass@1 0.667** (pass^k 0.583), val 0.542;
   stopping is 0.00 on test. Results and the runbook as run are in `docs/benchmark.md`; per-task
   pass counts are in `docs/baselines/stage8-control/`.
 
@@ -669,8 +669,9 @@ allowed only after the comparison, and it gets its own spot check.
 
 **Budget:** US$100 in total, including teacher API calls, GPU hours, storage and failed runs.
 Revised October 13, 2026: the ceiling is US$200. The rows below are the original US$100 plan
-plus one row for Stage 9 Items 4–6. Spent so far: \$2.45 (Stage 8 baseline \$0.35, teacher
-\$0.07, RFT sampling \$0.34, Item 3 Session A \$1.69). These are rough allocations to recheck against live prices before renting:
+plus one row for Stage 9 Items 4–6. Spent so far: about \$16.0 (Stage 8 baseline \$0.35, teacher
+\$0.07, RFT sampling \$0.34, Item 3 Session A \$1.69, Item 4 teacher \$0.18–0.37 and Session A
+\$13.21). These are rough allocations to recheck against live prices before renting:
 
 | Item | Assumed scale | Estimate |
 |---|---|---:|
@@ -696,9 +697,9 @@ candidate in Stage 9 Item 4, compared on val against the teacher-only candidates
 is dropped, because 20% of 255 own examples is 64 rows; the license check stays.
 
 **Evaluation layers** (revised October 14, 2026; the sets are defined in Stage 9):
-1. **Test**: 140 tasks on 14 shapes that training never sees, the Stage 8 test split together
-   with the Stage 9 holdout. It is run once per final candidate and nothing is chosen on it.
-   **Val**, the Stage 8 dev split, is where every choice is made. It is a small, local
+1. **Test**: 140 tasks on 14 shapes that training never sees: the 10 Stage 8 test shapes and
+   4 shapes reserved in Stage 9. It is run once per final candidate and nothing is chosen on it.
+   **Val**, the 64 Stage 8 val tasks, is where every choice is made. It is a small, local
    benchmark, not a broad generalization claim.
 2. **External test**: the When2Call test set and a locally adapted BFCL multi-turn subset,
    labelled as a local adaptation and never reported as an official score. Nothing derived from
@@ -731,23 +732,30 @@ and the score would measure practice on a known shape rather than a new kind of 
 
 | Set | Contents | `bench` split | Used for |
 |---|---|---|---|
-| train | 4 shapes, 80 tasks (more in Item 4), plus public SFT data | `train` | training data only |
-| val | 8 shapes, 64 tasks: the Stage 8 dev split | `dev` | every choice: epoch, data mix, recipe; run as often as needed |
-| test | 14 shapes, 140 tasks: the Stage 8 test split (10 shapes, 60 tasks) and the Stage 9 holdout (4 shapes, 80 tasks) | `test`, `holdout` | once per final candidate, at the end; nothing is chosen on it |
+| train | 16 shapes, 320 tasks (Item 1 built 4 shapes and 80 tasks, Item 4 added 12 and 240), plus public SFT data | `train` | training data only |
+| val | 8 shapes, 64 tasks, built in Stage 8 | `val` | every choice: epoch, data mix, recipe; run as often as needed |
+| test | 14 shapes, 140 tasks: 10 shapes and 60 tasks built in Stage 8, 4 shapes and 80 tasks reserved in Stage 9 Item 1 | `test` | once per final candidate, at the end; nothing is chosen on it |
 | external test | the When2Call test set and a local BFCL multi-turn subset | separate scorers | performance outside our harness, run with test |
+
+The `bench` splits took these names on October 14, 2026, and the four Stage 9 test shapes joined
+the test split then. Runs written before that date keep the earlier labels in their metadata and
+directory names; commands in the plans are written with the current names.
+The four Stage 9 test shapes, like all train shapes, are scored with three extra checks
+(`Skeleton.strict` in `evals/bench/skeletons.py`); the Stage 8 shapes keep their frozen scoring.
 
 **Headline numbers:** mean pass@1 on test, with pass^3 as its reliability, and the external
 scores. Every other number is diagnosis. All runs use Stage 8's server command and protocol
 (`docs/benchmark.md`), and each candidate is paired with the base by task ID.
 
-- [x] Item 1 — a task generator with fault injection; 80 train and 80 holdout tasks, the
-  holdout shapes reserved first.
+- [x] Item 1 — a task generator with fault injection; 80 train tasks, and 80 test tasks on
+  4 shapes reserved first.
 - [x] Item 2 — teacher and RFT trajectories run inside the harness, verified, and exported as
   SFT examples (255 and 63).
 - [x] Item 3 — the LoRA recipe, and the first adapters compared on val. Guide and record:
   [STAGE9_ITEM3_PLAN.md](STAGE9_ITEM3_PLAN.md).
-- [ ] Item 4 — more training data (more train shapes, public tool-use data) and the
-  candidates trained on it, chosen on val.
+- [x] Item 4 — more training data (more train shapes, public tool-use data) and the
+  candidates trained on it, chosen on val: mix. Guide and record:
+  [STAGE9_ITEM4_PLAN.md](STAGE9_ITEM4_PLAN.md).
 - [ ] Item 5 — the external test, checked on the base.
 - [ ] Item 6 — the final test, run once for the base and the final candidates.
 
@@ -778,7 +786,7 @@ python -m unittest agent_from_scratch.tests.test_train_skeleton -v
 ```
 
 Evidence: `outputs/stage9-train-pilot-20261012/summary.json`, `results.json`, generated fixtures,
-and per-run task/check/trace records. All 64 dev and 60 test task fingerprints, runtime source
+and per-run task/check/trace records. All 64 val and 60 test task fingerprints, runtime source
 hashes relative to the pre-pilot tree, and frozen protocol fields remain unchanged. The original
 Stage 8 manifest is retained: adding train source, split membership and tasks causes expected
 manifest drift. A future formal weight comparison needs an explicit versioned freeze decision;
@@ -802,7 +810,7 @@ Scripted gates exercise real tools and the ordinary agent loop. They reject answ
 wrong answers, clipped observations, unauthorized or unrelated changes, missing readback, and
 observations obtained only after an oracle write. Stage 9 fault variants require an observed
 fault; backup lookup requires failure of the designated primary path, not an unrelated missing
-file. These additional checks are scoped to train/holdout in the evaluation runner; the
+file. These additional checks apply to the Stage 9 shapes only (`Skeleton.strict`); the
 Stage 8 verifier, task fingerprints, runtime, model/template and decoding remain unchanged.
 Alternate read order and targeted edits are allowed, rather than requiring the scripted path.
 
@@ -823,10 +831,10 @@ Evidence: `outputs/stage9-item1-20261012/data/` records **160/160** correct scri
 observed. Additional negative/alternative-path gates are in `tests/test_stage9_tasks.py`;
 command isolation and manifest guards are in `tests/test_stage9_dataset.py`.
 
-`bench --split train` is ready for Item 2. A real `--split holdout` run requires `--final` and an
+`bench --split train` is ready for Item 2. A real `--split test` run requires `--final` and an
 explicit dataset `--manifest`; drift and limit overrides are rejected. The old Stage 8 manifest
 is retained, not overwritten. Formal comparisons use the new versioned snapshot and add a base
-run on the new held-out tasks; old control evidence remains a separate reference. Data-generator
+run on the four new test shapes; old control evidence remains a separate reference. Data-generator
 completion establishes a reliable small-scale environment, not actor capability or SFT gains.
 
 **Next smallest gap:** add the teacher API backend, collect a few verifier-passed train runs,
@@ -929,7 +937,7 @@ line up with weaknesses Stage 8 already recorded, and the teacher set demonstrat
 | Base behaviour on the train pool | Closest weakness recorded in Stage 8 | Teacher demonstrations |
 |---|---|---|
 | Final answer is not the bare token | Test stopping is 0.00: the model "never replies with only the required token" | 76 bare final answers |
-| No read-back after a write | Dev `delete_key`: "removed" when the edit never landed | Every `UPDATED` and `SAVED` trajectory reads back, because the verifier requires it |
+| No read-back after a write | Val `delete_key`: "removed" when the edit never landed | Every `UPDATED` and `SAVED` trajectory reads back, because the verifier requires it |
 | Gives up after its own failed read | No direct counterpart measured | 71 examples continue after a failed read; 5 show the clean first step |
 
 - **The RFT set cannot carry a training round on its own.** It covers 29 of 80 tasks and 40 of
@@ -943,7 +951,7 @@ line up with weaknesses Stage 8 already recorded, and the teacher set demonstrat
   of 160 rollouts, so the injected save fault is almost never met. The task is left as it is
   for now: the teacher data shows the missing step.
 - **Two Stage 8 weaknesses have no counterpart in the train pool:** doing nothing when the
-  requested state already holds (dev `no_op_correct_config`, 0.00) and reporting a missing file
+  requested state already holds (val `no_op_correct_config`, 0.00) and reporting a missing file
   (test `missing_file_report`, 0.00). No gain should be expected there from this data.
 
 These points set the entry conditions of Stage 10, listed in that section.
@@ -952,7 +960,7 @@ These points set the entry conditions of Stage 10, listed in that section.
 drifted in `source_sha256` only (`llm.py`, `evals/bench/run.py`, `evals/__main__.py` changed;
 the three `evals/sft/` files added). The Stage 8 manifest also reports `splits_sha256` and
 `tasks`, which date from Item 1. Neither was refreshed. The versioned freeze happens once,
-before the final test (Item 6). No dev, test or holdout task was run or exported in Item 2.
+before the final test (Item 6). No val or test task was run or exported in Item 2.
 
 Evidence: `outputs/stage9-item2-20261012-teacher-s{0,1,2}/`, `-rft/rft-train-s{0..7}/` and
 `-rft/rft-train-aggregate.json` (runs); `-sft-teacher-v3/` and `-sft-rft/` (datasets, each
@@ -1019,74 +1027,96 @@ Val, 64 tasks, three seeds per arm, mean pass@1 / pass^3:
 epoch was chosen on seed 0, which scored lowest of the three seeds (59, 61 and 63 tasks).
 Evidence: `outputs/stage9-item3-20261014-session-a/`.
 
-### Item 4 — more training data, chosen on val
+### Item 4 complete — more training data, chosen on val (October 15, 2026)
 
-Compute is not the constraint: the teacher set trains in 17 minutes. Variety is. Item 4 adds two
-kinds of data. Each becomes a candidate trained with Item 3's recipe and compared on val with
-Item 3's adapter.
+Two candidates, trained with Item 3's recipe unchanged and compared on val with teacher-v3 and
+the base. Guide, decisions and session record: [STAGE9_ITEM4_PLAN.md](STAGE9_ITEM4_PLAN.md).
+The code was delegated to AI at the user's explicit request.
 
-| Candidate | Trained on |
-|---|---|
-| teacher-v3 | the Item 2 teacher set, 4 train shapes (exists) |
-| teacher-wide | the teacher set on more train shapes |
-| mix | teacher-wide plus a sample of public tool-use data |
+| Candidate | Trained on | Rows |
+|---|---|---:|
+| teacher-v3 | Item 2's teacher examples, 4 train shapes (Item 3's adapter) | 255 |
+| teacher-wide | teacher examples on 16 train shapes | 956 |
+| mix | teacher-wide three times, 2,000 When2Call and 3,002 Toucan examples | 7,870 |
 
-- [ ] Confirm Item 3's recipe for the new candidates (D1–D5 and the epoch rule), or change it
-  on val evidence.
+**Data.**
 
-**More train shapes.** Only tasks in our own environment teach the behaviours val checks:
-reading back, continuing after a failure, stopping with the bare token, and seeing that nothing
-needs doing.
+- **Twelve new train shapes**, three per family, 20 tasks each: train is 16 shapes and 320 tasks.
+  Four have an outcome where nothing needs doing, one reports a missing file, and one finds a
+  file moved after a failed read. None asks for a reply token that only val or test uses. All
+  pass the Item 1 gates; `points_save_recovery` is unchanged.
+- **The teacher** passed 240 of 240 new tasks, after two shape fixes its first runs exposed: the
+  `moved_record_search` prompt let it skip the failed read, and the `missing_attachment_report`
+  contract demanded attachments the runtime skips after a failure (now a clean/fault pair).
+  teacher-wide holds 956 examples covering all 320 tasks, teacher-v3's 255 among them.
+- **Public data.** When2Call's `train_sft` has no tool calls, so the chosen replies of
+  `train_pref` were used: 684 calls, 646 questions and 670 declines (a decline only where no
+  offered tool fits). Toucan's SFT config gave 3,002 examples from 966 rows, a third of them
+  rows whose tools do not fit the request. Licences CC-BY-4.0 and Apache-2.0; revisions
+  `0582f77` and `0df3cf3`. About 1% of When2Call and 5% of Toucan rows were dropped, never
+  repaired.
 
-- [ ] Add 12–16 train skeletons, to reach 16–20 across the four families. The 80 existing
-  train tasks stay as they are.
-- [ ] Cover the two behaviours the pool lacks. One is leaving a state that already holds
-  untouched; val's `no_op_correct_config` still replies `UPDATED`. The other is reporting a
-  missing file.
-- [ ] Give each new skeleton at least two outcomes chosen by the seed, and clean/fault pairs
-  where it tests recovery.
-- [ ] Record for each new skeleton the closest val and test shape and how it differs. No new
-  shape may mirror one; test's `backup_record_lookup` is a missing primary file.
-- [ ] Every new skeleton passes the Item 1 gates.
-- [ ] Decide whether `points_save_recovery` is revised: the base reaches a write in 5 of 160
-  rollouts.
-- [ ] Run the teacher on the new tasks and export with the Item 2 commands
-  (`--flawed-turns drop --max-per-task 1`).
+**Session A** ran on one A100 80 GB, at commit `33867ec`, for \$13.21. Mix's longest rows do not
+fit an A40: one training step on a 23,481-token row peaked at 51.8 GiB.
 
-**Public tool-use data** is training data only: it cannot be run as tasks in our harness.
+- teacher-wide trained in 28 minutes, mean loss by epoch 0.258, 0.034, 0.027; mix in 5.3 hours,
+  0.515, 0.368, 0.291.
+- **Epoch** (val seed 0, most passed, the earlier on a tie): teacher-wide passed 44, 45, 51 of
+  64, so epoch 3; mix 57, 60, 60, so epoch 2.
 
-| Dataset | Adds | Size | License |
-|---|---|---|---|
-| `nvidia/When2Call` `train_sft` | when to call a tool, ask, or decline | 15,000 | CC-BY-4.0 |
-| `Agent-Ark/Toucan-1.5M` SFT subset | real multi-turn tool executions, irrelevant tools, failed calls | 119k | Apache-2.0 |
+Val, 64 tasks, three seeds per arm, mean pass@1 / pass^3:
 
-`xlam-function-calling-60k` (single-turn calls) is a fallback only. `APIGen-MT-5k` is excluded:
-it is non-commercial, and it covers the tau-bench domains.
+| | base | teacher-v3 | teacher-wide | mix |
+|---|---|---|---|---|
+| all | 0.589 / 0.47 | 0.932 / 0.83 | 0.740 / 0.58 | **0.943 / 0.89** |
+| inspection | 0.542 / 0.38 | 1.000 / 1.00 | 0.938 / 0.88 | 1.000 / 1.00 |
+| recovery | 0.771 / 0.69 | 0.958 / 0.88 | 0.479 / 0.19 | 1.000 / 1.00 |
+| stopping | 0.292 / 0.19 | 0.833 / 0.56 | 0.958 / 0.88 | 0.917 / 0.81 |
+| updates | 0.750 / 0.62 | 0.938 / 0.88 | 0.583 / 0.38 | 0.854 / 0.75 |
 
-- [ ] Record each license, card revision and download date. Read 20 rows of each dataset
-  before writing the converter.
-- [ ] Convert each row to `messages` and `tools`, render it with `render_chat` and the project
-  template, and write one example per assistant turn, as `export` does.
-- [ ] Keep only rows whose target parses back to the same calls and that fit in
-  `BENCH_N_CTX`. Nothing is repaired or truncated.
-- [ ] Use our system prompt unless the rows give a reason not to.
-- [ ] Start from the mix approved on October 13: 2,000 When2Call rows, 3,000 Toucan rows, and
-  our own data upsampled to a third of the rows. Change it at most twice, on val.
-- [ ] On val, check what public data can break: `format_exact` and false completions against
-  teacher-wide, not only the pass rate. Public rows' tool results are prompt context, never
-  targets.
+- **Mix is the best candidate, and level with teacher-v3.** It passed 60, 61 and 60 tasks. Against
+  the base it gains 22 to 27 tasks per seed and loses 2 or 3. Against teacher-v3 it gains 3 or 4
+  and loses 2 to 4, a difference within noise, with a higher pass^3 (0.89 against 0.83). Format
+  is exact in 182 of 192 runs, 1 of 87 completion claims is false, and no failed run declines
+  or asks a question: the public data's refusals did not carry over.
+- **Doing nothing when nothing is needed is learned.** `no_op_correct_config` is 1.00 for both
+  new candidates, against 0.73 for teacher-v3 and 0.00 for the base, although no train shape
+  mirrors it.
+- **teacher-wide is a regression**: 0.740, losing 13 to 20 tasks per seed to teacher-v3, with 14
+  false completions in 87 claims. It over-applies the edit-and-read-back habit of its new
+  shapes. On `delete_key` it edits and reads back until the 6-request limit (13 of its
+  14 failures there); on `check_fix_recheck` it edits a file the check has just passed. Mix holds the
+  same examples three times over and shows none of this, so the public rows kept the habit in
+  proportion. This agrees with Agent Data Protocol (arXiv 2510.24702), which reports mixed,
+  diverse agent data beating in-domain data alone.
+- **The control is stable.** The base scored 0.589 (Item 3: 0.573; Stage 8: 0.542) and
+  teacher-v3 0.932 (Item 3, on an A40: 0.953). Measured and served prompt tokens agree on all
+  3,902 requests.
 
-**Choosing.**
+**Choice**, by rules fixed in the plan before any result: teacher-wide is dropped (below
+teacher-v3 in all three seeds). **The final candidates for Item 6 are teacher-v3 and mix.** M1,
+the adapter Stage 10 starts from, is **mix**: the highest mean pass@1, and the tie rule (within
+one task per seed) also picks the candidate trained on more shapes. The mix was not changed.
 
-- [ ] Train teacher-wide and mix, and run each on val with three seeds, on one server with the
-  base.
-- [ ] Name the final candidates for Item 6: at most three, teacher-v3 included. No candidate is
-  added once Item 6 has run.
+**M0 on the new shapes** (Stage 10's reference, eight base samples of the 240 new tasks under
+the Item 2 protocol): mean pass@1 0.298, 101 of 240 tasks with a verified trajectory, 50 with
+mixed outcomes under the strict reward. Weakest: `note_instruction_ignore` 0.00 (the base reads
+one note and answers, though it never follows the injected instruction), `latest_visit_lookup`
+and `close_project_tasks` 0.01, `booking_slot_stop` 0.02.
 
-Agent Data Protocol (arXiv 2510.24702) reports that mixed, diverse agent data beats in-domain
-data alone on 7–32B models. TRACE (arXiv 2604.05336) builds training environments for the
-capabilities a model's failures show missing. Both were read from paper pages and not
-reproduced here.
+**Limits.** These are val results; test runs in Item 6. Each candidate has one training seed,
+and the epoch was chosen on one seed (teacher-wide's epoch 3 scored 51 on seed 0, but 43 and 48
+on seeds 1 and 2). Val is near its ceiling, so mix and teacher-v3 cannot be told apart on it.
+Toucan rows came through the datasets-server API, which does not report its revision; the
+repository's commit has not changed since 2025-10-04. Mix's When2Call test score (Item 5) will
+be in-distribution. The session ran on an A100, not Item 3's A40; base and teacher-v3 were run
+again on it.
+
+Evidence: `outputs/stage9-item4-20261015-session-a/` (val runs, comparisons, M0 runs, logs, the
+chosen adapters), `-sft-teacher-wide/`, `-sft-mix-v1/`, `-public-when2call/`, `-public-toucan/`,
+`-teacher-final-s0` to `-s4` and `outputs/stage9-item4-20261015/data/`. The three candidates are
+trained by [`scripts/train_stage9_adapters.sh`](../scripts/train_stage9_adapters.sh). 449 unit
+tests pass.
 
 ### Item 5 — the external test
 
@@ -1105,12 +1135,11 @@ better outside it, or has lost something general.
 ### Item 6 — the final test, once
 
 - [ ] All code is final and committed. On the pod, from a clean clone,
-  `dataset --output ... --check` writes the one versioned manifest, covering the test and
-  holdout tasks.
-- [ ] Run the base and the final candidates on `--split test` and `--split holdout`, three
-  seeds each, with `--final --manifest`, on one server process.
-- [ ] `aggregate` each split per arm, combine the two weighted by task count (60 and 80), and
-  pair each candidate with the base by task ID.
+  `dataset --output ... --check` writes the one versioned manifest, covering the 140 test
+  tasks.
+- [ ] Run the base and the final candidates on `--split test`, three seeds each, with
+  `--final --manifest`, on one server process.
+- [ ] `aggregate` the test runs per arm, and pair each candidate with the base by task ID.
 - [ ] Run the external test on the same arms.
 - [ ] Report in this stage the headline table (test mean pass@1 and pass^3, and external
   scores, per arm), the costs and the limits. Nothing is chosen on these results.
@@ -1147,8 +1176,9 @@ task, Stage 8 server command), is the reference for Item 1:
 | `points_save_recovery` | 0.006 | 1 of 20 |
 | all | 0.298 | 29 of 80 |
 
-If Stage 9 Item 4 adds train shapes, M0 is sampled on them too, under the same protocol, so
-that both tables cover the same pool.
+Stage 9 Item 4 added 12 train shapes and sampled M0 on them under the same protocol (mean
+pass@1 0.298, 101 of 240 tasks with a verified trajectory); the table by skeleton is in
+[STAGE9_ITEM4_PLAN.md](STAGE9_ITEM4_PLAN.md), section 12. Item 1 samples M1 on all 320 tasks.
 
 ### Item 1 — M1's yield on the train pool
 
@@ -1178,13 +1208,14 @@ Stage 9 Item 2's 640 rollouts took 26 minutes and \$0.34 on one A40.
 
 **Entry conditions.** Stage 10's rounds start only when each of these is settled:
 
-- [ ] Stage 9 Item 4 has chosen M1 on val.
+- [x] Stage 9 Item 4 has chosen M1 on val: mix (val mean pass@1 0.943).
 - [ ] Item 1 is done. If M1's yield on the weak skeletons is no higher than M0's, expert
   iteration has nothing to iterate on, and that is the result to report.
-- [ ] `points_save_recovery` reaches a write in M1's samples, or Stage 9 Item 4 revised it.
-- [ ] The two behaviours the original pool lacked (leaving a correct state untouched, and
-  reporting a missing file) are covered by Stage 9 Item 4's new shapes, or a note says no
-  gain is expected there.
+- [ ] `points_save_recovery` reaches a write in M1's samples. Stage 9 Item 4 left it unchanged
+  and added `moved_record_search`, which teaches searching after a failed read.
+- [x] The two behaviours the original pool lacked (leaving a correct state untouched, and
+  reporting a missing file) are covered by Stage 9 Item 4's new shapes. Val's
+  `no_op_correct_config` rose to 1.00 for mix.
 
 ### Conditional: a GRPO pilot (design written October 12, 2026)
 
@@ -1344,9 +1375,10 @@ The capped memory index remains planned Stage 4 work.
 on a host that can hold the 7B weights, and record the retained/lost facts in
 [context-memory.md](context-memory.md); that is Stage 3's one outstanding gap. Stage 8 is
 complete: the benchmark and protocol are frozen and the Qwen3-4B control baseline is recorded
-(`docs/benchmark.md`). Stage 9 Items 1–3 are complete: the task pool, the teacher and RFT
-examples, and the LoRA recipe, whose teacher adapter reaches 0.953 on val. Item 4 is next: more
-train shapes and public data, chosen on val. For each session record: what I built, what I broke,
+(`docs/benchmark.md`). Stage 9 Items 1–4 are complete: the task pool, the teacher and RFT
+examples, the LoRA recipe, and the wider data. The final candidates are teacher-v3 (0.932 on val)
+and mix (0.943); mix is M1. Item 5 is next: the When2Call and BFCL external test, checked on the
+base. For each session record: what I built, what I broke,
 what the evidence shows, what I can explain unaided, and the next smallest gap.
 
 [ch1]: ../../../harness-books/book1-claude-code/chapter-01-why-harness-engineering.md
@@ -1415,7 +1447,7 @@ examples have different roles. Optional branches are omitted from the required-p
 
 ## Optional autoresearch-style recipe search · draft
 A coding agent proposes one bounded change at a time, drawn from data mix, filter threshold, LoRA rank/lr, epochs, and the
-teacher/RFT ratio. Each change gets a time/cost cap, a dev evaluation, keep/revert, and a
+teacher/RFT ratio. Each change gets a time/cost cap, a val evaluation, keep/revert, and a
 ledger row that includes failed hypotheses. The agent never sees the test set, and the evaluator,
 harness and splits stay frozen. Report it as automated research, not RSI. Missing
 runtime/training evidence stays explicitly incomplete.
@@ -1429,7 +1461,7 @@ Stages 9–11. Its results are reported separately from adapter training and exp
 **Prerequisites:**
 
 - [ ] Build the Stage 9 train-skeleton generator first. Split skeletons before generating variants;
-  use new training shapes for search and dev tasks for candidate selection. Reserve new unseen
+  use new training shapes for search and val tasks for candidate selection. Reserve new unseen
   skeletons for a final generalization check; the existing frozen test split remains reserved
   for the weight-comparison protocol.
 - [ ] Turn failed development runs into diagnostic records: task input, failed verifier checks,
@@ -1447,7 +1479,7 @@ Stages 9–11. Its results are reported separately from adapter training and exp
 - [ ] Wrap the existing fresh-workspace runner and independent verifier as an
   `optimize_anything` evaluator returning `(float(passed), diagnostics)`. Keep task expectations,
   verifier, fault injection and splits outside the candidate's editable surface. Feed training
-  diagnostics to reflection; use full dev validation scores for selection.
+  diagnostics to reflection; use full val validation scores for selection.
 - [ ] Set an explicit rollout/time/cost cap and record it separately from the Stage 9–11 budget
   before running. Compare the original and selected prompts over matched tasks and multiple
   seeds. Report task pass rate, regressions, failed-check categories, requests, tokens and time;
@@ -1455,7 +1487,7 @@ Stages 9–11. Its results are reported separately from adapter training and exp
 
 **Output:** an experiment ledger with every proposed prompt, parent, training/validation scores,
 accept/reject decision and cost; versioned candidate/config records; and a paired baseline versus
-selected-candidate report. Report dev-only gains as exploratory. Claim transfer only after the
+selected-candidate report. Report val-only gains as exploratory. Claim transfer only after the
 reserved new-task check. A null result is valid. Any adopted prompt becomes a new harness version;
 it must not be mixed into the frozen Stage 9–11 weight comparison. Describe this as reflective
 prompt search, not evidence of recursive improvement in the optimizer itself.
