@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 from agent_from_scratch.config import CHAT_TEMPLATE_PATH
 from agent_from_scratch.evals.run import save
+from agent_from_scratch.evals.bench import skeletons
+from agent_from_scratch.evals.bench.skeletons import SHAPES
 from agent_from_scratch.evals.sft import grpo
 from agent_from_scratch.evals.sft.grpo import (advantages, collect_groups, iteration_tasks, reward,
                                                sampled_rows, train_pool)
@@ -56,6 +58,8 @@ def fake_run(root: Path, name: str, seed: int, outcomes: dict, *, split: str = "
 
 class PoolTests(unittest.TestCase):
     def setUp(self):
+        # The Stage 8-9 split; a test that needs Stage 10 shapes patches its own levels.
+        self.enterContext(patch.object(skeletons, "load_levels", return_value={}))
         self.pool = train_pool()
 
     def test_pool_is_the_whole_train_split(self):
@@ -78,6 +82,22 @@ class PoolTests(unittest.TestCase):
     def test_an_iteration_past_the_pass_is_refused(self):
         with self.assertRaises(ValueError):
             iteration_tasks(self.pool, 1, 10)
+
+    def test_the_pool_can_be_restricted_to_named_skeletons(self):
+        names = [shape.name for shape in SHAPES if shape.split == "train"]
+        with patch.object(skeletons, "load_levels", return_value={name: 3 for name in names}):
+            pool = train_pool(names)
+        self.assertEqual(sorted(pool), sorted(names))
+        self.assertEqual({len(ids) for ids in pool.values()}, {20})
+        skeleton_of = {task_id: name for name, ids in pool.items() for task_id in ids}
+        chunks = [iteration_tasks(pool, 1, i) for i in range(10)]  # two per skeleton by default
+        self.assertEqual(sorted(t for chunk in chunks for t in chunk), sorted(skeleton_of))
+        for chunk in chunks:
+            self.assertEqual(Counter(skeleton_of[t] for t in chunk), {name: 2 for name in names})
+
+    def test_an_unregistered_skeleton_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "Not train skeletons"):
+            train_pool(["ordered_migration"])  # levels.json does not name it yet
 
 
 class RewardTests(unittest.TestCase):

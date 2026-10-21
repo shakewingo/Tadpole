@@ -21,7 +21,7 @@ export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:Tr
 SERVER_PID=""
 
 dry() { [ "${STAGE10_DRY:-0}" = 1 ]; }
-dry || mkdir -p "$LOGS"
+if dry; then LOGS=$(mktemp -d); else mkdir -p "$LOGS"; fi  # a dry run writes nothing under /root
 
 run_logged() {  # run_logged LOG COMMAND...: run COMMAND with its output in LOG
     local log=$1; shift
@@ -63,10 +63,19 @@ bench() {  # bench OUT SPLIT SEED ADAPTER [TASKS]: one bench run against the ser
         --adapter "$4" ${tasks[@]+"${tasks[@]}"} --output "outputs/$1"
 }
 
-sample_train() {  # sample_train NAME ADAPTER: 8 seeds of the whole train split in parallel, then both counts
-    local pids=() runs=()
+pool_args() {  # the --skeletons argument when STAGE10_POOL (comma-separated train skeletons) names a pool
+    [ -n "${STAGE10_POOL:-}" ] && echo "--skeletons $STAGE10_POOL"
+    return 0
+}
+
+sample_train() {  # sample_train NAME ADAPTER: 8 seeds of the pool (STAGE10_POOL, else the whole train split)
+    local pids=() runs=() tasks=""
+    if [ -n "${STAGE10_POOL:-}" ]; then
+        # shellcheck disable=SC2046
+        if dry; then tasks="<the pool's tasks>"; else tasks=$(python -m agent_from_scratch.evals grpo tasks --pool $(pool_args)); fi
+    fi
     for s in $SEEDS; do
-        bench "$1-train-s$s" train "$s" "$2" & pids+=($!)
+        bench "$1-train-s$s" train "$s" "$2" "$tasks" & pids+=($!)
         runs+=("outputs/$1-train-s$s")
     done
     wait_all "${pids[@]}"
