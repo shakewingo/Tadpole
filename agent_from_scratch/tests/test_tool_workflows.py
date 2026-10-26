@@ -1,18 +1,39 @@
 import json
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock
 
 from agent_from_scratch.agent import Agent
-from agent_from_scratch.examples.tools_demo import demo_registry
 from agent_from_scratch.llm import LLM, LLMResponse, ResponseType
-from agent_from_scratch.tools.base import ToolCall
+from agent_from_scratch.tools.base import ToolCall, ToolRegistry
+from agent_from_scratch.tools.calculator import CalculatorTool
+from agent_from_scratch.tools.files import ListFilesTool, ReadFileTool, WriteFileTool
+from agent_from_scratch.tools.shell import Command, ShellTool
+from agent_from_scratch.tools.web import WebFetchTool
 from agent_from_scratch.trace import TraceStore
 
 
 def call(name, **arguments):
     return LLMResponse('assistant', '', ResponseType.tool_call, tool_calls=[ToolCall(name, arguments)])
+
+
+def demo_registry(workspace: Path, hosts: set[str]) -> ToolRegistry:
+    """Confined file tools plus two fixed shell commands that run a trusted script outside the workspace."""
+    workspace = workspace.resolve(strict=True)
+    script = Path(__file__).with_name("fixtures").joinpath("fixture_command.py").resolve()
+    if script.is_relative_to(workspace):
+        raise ValueError("The trusted fixture script must be outside the writable workspace.")
+    commands = {
+        "inspect_fixture": Command((sys.executable, "-I", str(script), "inspect"), "Print config.json"),
+        "check_fixture": Command((sys.executable, "-I", str(script), "check"),
+                                 'Check output="report.txt" and retries=3 in config.json'),
+    }
+    return ToolRegistry([CalculatorTool(), ListFilesTool(workspace, restrict_to_workspace=True),
+                         ReadFileTool(workspace, restrict_to_workspace=True),
+                         WriteFileTool(workspace, restrict_to_workspace=True), WebFetchTool(hosts),
+                         ShellTool(workspace, commands)])
 
 
 class ToolWorkflowTests(unittest.TestCase):

@@ -8,7 +8,7 @@ Each row becomes our conversation: our system prompt, the row's own tools in our
 tool results in our tool-result envelope, and one example per assistant turn. A row that cannot
 be converted exactly is dropped and counted, never repaired or truncated. Rows are visited in a
 seeded order and whole rows are kept until --max-examples is reached. Writes examples.jsonl and
-metadata.json, which `train` and `mix` read. Design: docs/STAGE9_ITEM4_PLAN.md (D6, D7).
+metadata.json, which `train` and `mix` read. See evals/README.md, "Building SFT data".
 """
 
 import argparse

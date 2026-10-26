@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 10 Session G (docs/STAGE10_HARD_TASKS_PLAN.md, section 5): mix-v3 is M1, the pool is the
+# Stage 10's main session (docs/STAGE.md, Stage 10): mix-v3 is M1, the pool is the
 # train shapes levels.json names. Stages: Item 1 on the pool and M1's val at three seeds; K8's
 # gate, decided here; the GRPO pilot (up to three passes, G6); the self-SFT rounds (up to three,
 # E3); and the comparison of every candidate on one server, val at three seeds.
@@ -117,7 +117,7 @@ if [ "$SFT" = True ]; then
 fi
 
 if ! finished compare; then
-    # Every candidate on one server (C1 of STAGE10_PLAN.md): M1, the rounds' models, the GRPO passes.
+    # Every candidate on one server: M1, the rounds' models, the GRPO passes.
     modules=("m1=$M1_ADAPTER")
     for k in 2 3 4; do [ -d "outputs/s10-m$k" ] && modules+=("m$k=outputs/s10-m$k"); done
     for p in 1 2 3; do [ -d "outputs/s10-grpo-pass-$p" ] && modules+=("grpo$p=outputs/s10-grpo-pass-$p"); done

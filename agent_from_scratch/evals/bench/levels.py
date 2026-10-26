@@ -1,4 +1,4 @@
-"""Choose each Stage 10 shape's level from calibration runs (docs/STAGE10_HARD_TASKS_PLAN.md, K4).
+"""Choose each Stage 10 shape's level from calibration runs (evals/README.md, "Datasets").
 
 Usage: python -m agent_from_scratch.evals levels RUN_DIR ... --output REPORT.json [--levels LEVELS.json]
 

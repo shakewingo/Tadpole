@@ -1,4 +1,4 @@
-"""Stage 10 shapes, rules and arithmetic (docs/STAGE10_HARD_TASKS_PLAN.md, section 3, Task 2).
+"""Stage 10 shapes, rules and arithmetic (evals/README.md, "Datasets").
 
 Each builder takes a difficulty level 1-5. The deliverable is a file whose exact content the
 stated rules determine, so a run passes only if every rule reached every record. The rules are
@@ -495,7 +495,7 @@ RULE_SHAPES = [
           _solution_update_records),
     Shape("payroll_rule_adjust", "updates", "hardtest", FINAL_SEEDS, False, _build_payroll_rule_adjust,
           _solution_update_records),
-    # Stage 11: the hard test's shapes for the families Stage 10 trained (docs/STAGE11_PLAN.md, F2).
+    # Stage 11: the hard test's shapes for the families Stage 10 trained.
     Shape("config_patch_plan", "updates", "hardtest", FINAL_SEEDS, False, _build_config_patch_plan,
           _solution_update_records),
     Shape("shipping_fee_table", "updates", "hardtest", FINAL_SEEDS, False, _build_shipping_fee_table,

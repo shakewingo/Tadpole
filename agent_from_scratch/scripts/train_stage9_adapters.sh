@@ -15,7 +15,7 @@
 # logged "allocation failed with OOM" warnings that the allocator retried and survived), so
 # expandable segments are turned on.
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
-# Design and results: docs/STAGE9_ITEM3_PLAN.md and docs/STAGE9_ITEM4_PLAN.md.
+# Design and results: docs/STAGE.md, Stage 9.
 set -euo pipefail
 
 TEACHER_V3=outputs/stage9-item2-20261012-sft-teacher-v3   # 255 examples, 4 train shapes

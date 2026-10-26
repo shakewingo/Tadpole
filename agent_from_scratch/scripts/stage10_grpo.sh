@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 10's GRPO pilot (decisions G2-G6 of docs/STAGE10_PLAN.md). Starting from M1, each
+# Stage 10's GRPO pilot (docs/STAGE.md, Stage 10). Starting from M1, each
 # iteration serves the current adapter, samples its 42 train tasks at 8 seeds, stops the server
 # and takes one `grpo step`; ten iterations make a pass. After each pass: the adapter is kept as
 # outputs/PREFIX-pass-P, val seed 0 runs, and G6 may stop the pilot.

@@ -6,8 +6,8 @@ Usage: python -m agent_from_scratch.evals bfcl --bfcl-root DIR --output DIR [--a
 DIR is `berkeley-function-call-leaderboard` from ShishirPatil/gorilla. Each entry's user turns are
 given to the model in a plain chat loop with the entry's own tools (not our agent harness),
 greedy, at most 20 steps per turn. Calls are rebuilt from the parsed JSON arguments and run on
-BFCL's own simulated backends; BFCL's own `multi_turn_checker` scores the entry. Design:
-docs/STAGE9_ITEM5_6_PLAN.md (E3).
+BFCL's own simulated backends; BFCL's own `multi_turn_checker` scores the entry. See
+evals/README.md, "External test".
 """
 
 import argparse

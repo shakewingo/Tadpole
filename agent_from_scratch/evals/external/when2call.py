@@ -9,7 +9,7 @@ Usage:
 of the four candidate replies is scored by its log-likelihood after a hand-written Qwen tool
 prompt. `generate` answers the LLM-as-a-judge questions with the tools offered, and `judge`
 classifies those answers with DeepSeek using the repository's judge prompt. The test set is
-never trained on. Design: docs/STAGE9_ITEM5_6_PLAN.md (E1, E2).
+never trained on. See evals/README.md, "External test".
 """
 
 import argparse

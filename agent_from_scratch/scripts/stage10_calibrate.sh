@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 10 Session F (docs/STAGE10_HARD_TASKS_PLAN.md, K3-K4): sample M1 on the calibration split
+# Stage 10's calibration (evals/README.md, "Datasets"): sample M1 on the calibration split
 # (every shape at every level, seeds 100-105) at 8 seeds in parallel, then choose each shape's
 # level with `levels`. The chosen levels are written to outputs/, to be reviewed before they
 # replace evals/bench/levels.json.

@@ -3,8 +3,8 @@
 # Training-only packages (torch, transformers, peft) are not here; see requirements-train.txt.
 
 # Local GGUF backend and the `hf download` command. macOS only: the rented vLLM pod never
-# loads a GGUF, and vLLM brings its own huggingface_hub (2.2.0 with vllm==0.30.0 on
-# October 13, 2026, which this range matches).
+# loads a GGUF, and vLLM brings its own huggingface_hub (2.2.0 with vllm==0.30.0, which this
+# range matches).
 llama-cpp-python>=0.3,<0.4; sys_platform == "darwin"
 huggingface_hub>=2,<3; sys_platform == "darwin"
 

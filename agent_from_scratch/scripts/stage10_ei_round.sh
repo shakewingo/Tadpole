@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 10 expert iteration, round K (decisions E1-E3 of docs/STAGE10_PLAN.md):
+# Stage 10 expert iteration, round K (docs/STAGE.md, Stage 10):
 #   M_K's verified train rollouts (export --track rft, teacher-wide's settings)
 #   + M1's training data (teacher-wide x3, When2Call, Toucan), retrained from the base -> M_{K+1};
 #   its epoch chosen on val seed 0, val seeds 1-2 for that epoch, then M_{K+1} sampled on the

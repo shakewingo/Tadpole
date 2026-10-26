@@ -8,8 +8,8 @@ An arm is one bench run per seed (results.json directories). pass@1 is the share
 over every task and seed. A pair (A:B) is matched by task and seed: wins and losses for B against A,
 McNemar's exact p over the discordant pairs (the `compare` test), and a 95% bootstrap interval of
 B's pass@1 minus A's that resamples tasks, keeping all seeds of a task together. An arm with fewer
-runs than another is reported with its seed count, never averaged silently. Design:
-docs/STAGE11_PLAN.md (F6).
+runs than another is reported with its seed count, never averaged silently. See
+docs/STAGE.md, Stage 11.
 """
 
 import argparse

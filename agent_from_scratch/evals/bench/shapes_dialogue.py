@@ -1,4 +1,4 @@
-"""Stage 10 shapes, multi-turn dialogues (docs/STAGE10_HARD_TASKS_PLAN.md, section 3, Task 3).
+"""Stage 10 shapes, multi-turn dialogues (evals/README.md, "Datasets").
 
 One structure in three domains. Turn 1 asks about a group of two records: the act side (even
 seed) asks for the one that stands out, the ask side (odd seed) for both. Then level - 1 turns

@@ -98,7 +98,7 @@ def protocol_mismatch(settings: dict, seed: int) -> list[str]:
     """Ways a loaded backend differs from the frozen protocol; [] means a comparable run.
 
     The served revision is not visible through the OpenAI API, so it is pinned by the launch
-    command in docs/benchmark.md rather than checked here.
+    command in evals/README.md rather than checked here.
     """
     problems = []
     if settings.get("backend") != BENCH_MODEL["backend"]:

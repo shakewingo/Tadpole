@@ -1,6 +1,4 @@
 """Long-poll Telegram bridge to Agent.run_turn.
-
-Design: docs/superpowers/specs/2026-09-22-telegram-bot-design.md
 """
 
 from __future__ import annotations

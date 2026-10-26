@@ -14,8 +14,8 @@ prompt the model saw and the text it sampled, weighted by its rollout's advantag
 `step` takes one iteration's runs and the adapter that sampled them, takes one optimizer step
 (`train.policy_step`), and writes the next adapter with the optimizer state beside it
 (`optimizer.pt`), so the next step continues the same AdamW. Torch, transformers and peft are
-imported only when a step trains. Design: docs/STAGE10_PLAN.md (G1-G6) and docs/STAGE.md
-("Conditional: a GRPO pilot").
+imported only when a step trains. See docs/STAGE.md, Stage 10, and
+evals/README.md, "Expert iteration and GRPO".
 """
 
 import argparse

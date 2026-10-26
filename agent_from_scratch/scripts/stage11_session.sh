@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 11 Session I (docs/STAGE11_PLAN.md, F1-F5): the final runs, each arm once, on one server.
+# Stage 11's final session (docs/STAGE.md, Stage 11): the final runs, each arm once, on one server.
 #   1. A new freeze (`dataset --check`); its 140 test tasks must match Stage 9's freeze, or stop.
 #   2. One server: the base plus teacher-v3, mix, mix-v2, mix-v3 and M4.
 #   3. Test: mix-v2, mix-v3, M4 (Stage 9's base, teacher-v3 and mix stand as reported).

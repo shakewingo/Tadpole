@@ -101,7 +101,7 @@ class LevelTests(unittest.TestCase):
 
 
 class LevelRuleTests(unittest.TestCase):
-    """C1 and C2 (docs/STAGE10_HARD_TASKS_PLAN.md, K4), and the levels command."""
+    """The level rule, the minimum shapes kept, and the levels command."""
 
     def test_the_level_closest_to_half_wins(self):
         self.assertEqual(choose_level({1: 0.9, 2: 0.6, 3: 0.3}), 2)

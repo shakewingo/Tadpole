@@ -1065,7 +1065,7 @@ def _solution_note_instruction_ignore(task: Task) -> list:
     return [call("list_files", path="inbox")] + _solution_read_sources(task)
 
 
-# Stage 9 Item 7 shapes (docs/STAGE9_ITEM7_PLAN.md, F3-F5). Act/ask pairs share their records
+# Multi-turn and act-or-ask shapes (evals/README.md, "Datasets"). Act/ask pairs share their records
 # through `_pair_rng` (seeds 2k and 2k+1); the seed's parity picks the variant, so the pair
 # differs only in whether the needed fact is established. JSON edits are checked by parsing,
 # so they have no read-back requirement (`debug["readback"]` is False).
@@ -1326,7 +1326,7 @@ class Skeleton:
 
 SKELETONS: list[Skeleton] = []
 
-# Val grew after the 7B pilot (one skeleton per family was too few seeds to select between
+# Val grew after the pipeline pilot (one skeleton per family was too few seeds to select between
 # checkpoints); seeds 0-2 of the original four are unchanged, so their tasks are too.
 VAL_SEEDS = tuple(range(10))
 VAL_RECOVERY_SEEDS = tuple(range(5))
@@ -1459,7 +1459,7 @@ SKELETONS.extend([
 ])
 
 
-# Stage 10: shapes with a difficulty level (docs/STAGE10_HARD_TASKS_PLAN.md, K1-K5). Calibration
+# Stage 10: shapes with a difficulty level (evals/README.md, "Datasets"). Calibration
 # registers every level on seeds no other split uses; train, val and hardtest register a shape
 # only at the level evals/bench/levels.json names, on the shape's own seeds.
 LEVELS = (1, 2, 3, 4, 5)

@@ -6,7 +6,7 @@ Usage: python -m agent_from_scratch.evals mix --own DIR --public DIR [DIR ...] -
 Our examples are repeated a whole number of times k, chosen so that they come closest to
 --own-share of the rows; the public datasets are used as `public` sampled them. --self adds a
 student's own verified rollouts (an `rft` export) once, without changing k. The rows are then
-shuffled with --seed. Design: docs/STAGE9_ITEM4_PLAN.md (D7) and docs/STAGE10_PLAN.md (E1).
+shuffled with --seed. See evals/README.md, "Building SFT data".
 """
 
 import argparse

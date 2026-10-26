@@ -4,7 +4,7 @@
 # active and no server running; they start and stop the server themselves.
 #
 # STAGE10_DRY=1 prints each command instead of running it (no GPU, no server, no outputs).
-# Design: docs/STAGE10_PLAN.md.
+# Design: docs/STAGE.md, Stage 10.
 
 # M1 and the datasets M1 was trained on (Stage 9 Item 4), as the pod's outputs/ holds them.
 M1_ADAPTER=${M1_ADAPTER:-outputs/sft-mix-r1/epoch-2}

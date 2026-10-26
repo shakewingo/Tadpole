@@ -1,5 +1,5 @@
 """Checks every Stage 10 shape shares: each level keeps the Item 1 gates, and difficulty grows
-with the level. Mixed into a TestCase that sets SHAPE_NAMES (docs/STAGE10_HARD_TASKS_PLAN.md)."""
+with the level. Mixed into a TestCase that sets SHAPE_NAMES."""
 
 from pathlib import Path
 import random

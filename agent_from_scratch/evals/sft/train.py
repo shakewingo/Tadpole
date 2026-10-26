@@ -111,7 +111,7 @@ def fit(model, rows: list[dict], *, epochs: int, lr: float, accumulate: int = 8,
 
 
 def policy_step(model, optimizer, rows: list[dict], *, lr: float) -> dict:
-    """One optimizer step on weighted rows: the GRPO pilot's update (docs/STAGE10_PLAN.md, G3-G4).
+    """One optimizer step on weighted rows: the GRPO pilot's update (docs/STAGE.md, Stage 10).
 
     The loss is (1/N) * sum_i w_i * (mean negative log-likelihood of row i's completion tokens),
     so a row with a positive weight is made more likely and one with a negative weight less

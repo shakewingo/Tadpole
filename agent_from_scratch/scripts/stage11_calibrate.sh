@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 11 Session H (docs/STAGE11_PLAN.md, F2): calibrate M1 (mix-v3) on the three new hard-test
+# Stage 11's hard-test calibration: calibrate M1 (mix-v3) on the three new hard-test
 # shapes, every level, calibration seeds only, 8 samples each; then `levels` chooses their levels
 # by C1. The chosen levels are written to outputs/ to be merged into levels.json after review.
 #

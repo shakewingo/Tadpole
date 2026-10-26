@@ -1,4 +1,4 @@
-"""Stage 10 shapes, mixed states and faults (docs/STAGE10_HARD_TASKS_PLAN.md, section 3, Task 4).
+"""Stage 10 shapes, mixed states and faults (evals/README.md, "Datasets").
 
 A folder of records, each needing its own decision: change it, leave it (already right), or
 leave it and report it (locked, frozen, pinned). Two shapes add a fault that the run must meet
@@ -242,7 +242,7 @@ STATE_SHAPES = [
     Shape("flag_rollout", "stopping", "val", FINAL_SEEDS, False, _build_flag_rollout, _solution_planned),
     Shape("cert_renewal_batch", "stopping", "hardtest", FINAL_SEEDS, False, _build_cert_renewal_batch,
           _solution_planned),
-    # Stage 11 (docs/STAGE11_PLAN.md, F2).
+    # Stage 11's hard-test shape.
     Shape("ledger_audit_fault", "recovery", "hardtest", FINAL_RECOVERY_SEEDS, True, _build_ledger_audit_fault,
           _solution_planned),
 ]
