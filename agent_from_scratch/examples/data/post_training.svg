@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="440" viewBox="0 0 1040 440" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+  </defs>
+  <rect width="1040" height="440" fill="#ffffff"/>
+
+  <!-- Lane labels -->
+  <g font-weight="bold" font-size="14" fill="#222">
+    <text x="16" y="62">SFT</text>
+    <text x="16" y="202">Expert</text>
+    <text x="16" y="220">iteration</text>
+    <text x="16" y="342">GRPO</text>
+  </g>
+  <g fill="#666" font-size="11.5">
+    <text x="16" y="80">§6</text>
+    <text x="16" y="238">§7, from the</text>
+    <text x="16" y="252">SFT model</text>
+    <text x="16" y="360">§7, from the</text>
+    <text x="16" y="374">SFT model</text>
+  </g>
+  <line x1="12" y1="140" x2="1028" y2="140" stroke="#ddd"/>
+  <line x1="12" y1="290" x2="1028" y2="290" stroke="#ddd"/>
+
+  <!-- Boxes: x = 140, 320, 500, 680, 860; width 160 -->
+  <g stroke="#888" stroke-width="1.2" fill="#f4f6f8">
+    <rect x="140" y="30" width="160" height="70" rx="8"/>
+    <rect x="320" y="30" width="160" height="70" rx="8"/>
+    <rect x="500" y="30" width="160" height="70" rx="8"/>
+    <rect x="680" y="30" width="160" height="70" rx="8"/>
+    <rect x="140" y="170" width="160" height="70" rx="8"/>
+    <rect x="320" y="170" width="160" height="70" rx="8"/>
+    <rect x="500" y="170" width="160" height="70" rx="8"/>
+    <rect x="680" y="170" width="160" height="70" rx="8"/>
+    <rect x="140" y="320" width="160" height="70" rx="8"/>
+    <rect x="320" y="320" width="160" height="70" rx="8"/>
+    <rect x="500" y="320" width="160" height="70" rx="8"/>
+    <rect x="680" y="320" width="160" height="70" rx="8"/>
+  </g>
+  <g stroke="#3b6ea5" stroke-width="1.5" fill="#e3edf8">
+    <rect x="860" y="30" width="160" height="70" rx="8"/>
+    <rect x="860" y="170" width="160" height="70" rx="8"/>
+    <rect x="860" y="320" width="160" height="70" rx="8"/>
+  </g>
+
+  <!-- Box text, centred -->
+  <g text-anchor="middle" fill="#222">
+    <text x="220" y="54"><tspan font-weight="bold">Teacher model</tspan><tspan x="220" dy="17">runs a train task</tspan><tspan x="220" dy="17">in the agent loop</tspan></text>
+    <text x="400" y="54"><tspan font-weight="bold">Verifier</tspan><tspan x="400" dy="17">keeps the runs</tspan><tspan x="400" dy="17">that passed</tspan></text>
+    <text x="580" y="54"><tspan font-weight="bold">Export</tspan><tspan x="580" dy="17">one (prompt, completion)</tspan><tspan x="580" dy="17">per model request</tspan></text>
+    <text x="760" y="54"><tspan font-weight="bold">LoRA SFT</tspan><tspan x="760" dy="17">loss on the</tspan><tspan x="760" dy="17">completion tokens</tspan></text>
+    <text x="940" y="62"><tspan font-weight="bold">SFT model</tspan><tspan x="940" dy="17">(SFT-1, SFT-2)</tspan></text>
+
+    <text x="220" y="194"><tspan font-weight="bold">Current model</tspan><tspan x="220" dy="17">samples each task</tspan><tspan x="220" dy="17">8 times</tspan></text>
+    <text x="400" y="194"><tspan font-weight="bold">Verifier</tspan><tspan x="400" dy="17">reward 1 or 0</tspan><tspan x="400" dy="17">per rollout</tspan></text>
+    <text x="580" y="194"><tspan font-weight="bold">Rejection sampling</tspan><tspan x="580" dy="17">keep the rollouts</tspan><tspan x="580" dy="17">with reward 1</tspan></text>
+    <text x="760" y="194"><tspan font-weight="bold">SFT again</tspan><tspan x="760" dy="17">SFT data + kept</tspan><tspan x="760" dy="17">rollouts, from base</tspan></text>
+    <text x="940" y="202"><tspan font-weight="bold">Next model</tspan><tspan x="940" dy="17">(EI-1, EI-2, EI-3)</tspan></text>
+
+    <text x="220" y="344"><tspan font-weight="bold">Current model</tspan><tspan x="220" dy="17">samples each task</tspan><tspan x="220" dy="17">8 times</tspan></text>
+    <text x="400" y="344"><tspan font-weight="bold">Verifier</tspan><tspan x="400" dy="17">reward 1 or 0</tspan><tspan x="400" dy="17">per rollout</tspan></text>
+    <text x="580" y="344"><tspan font-weight="bold">Group advantage</tspan><tspan x="580" dy="17">A = (r − mean) / std</tspan><tspan x="580" dy="17">all-equal groups skipped</tspan></text>
+    <text x="760" y="344"><tspan font-weight="bold">One gradient step</tspan><tspan x="760" dy="17">every row weighted</tspan><tspan x="760" dy="17">by its rollout's A</tspan></text>
+    <text x="940" y="352"><tspan font-weight="bold">Next adapter</tspan><tspan x="940" dy="17">(GRPO-1, -2, -3)</tspan></text>
+  </g>
+
+  <!-- Arrows between boxes -->
+  <g stroke="#555" stroke-width="1.4" fill="none" marker-end="url(#arrow)">
+    <line x1="300" y1="65" x2="318" y2="65"/>
+    <line x1="480" y1="65" x2="498" y2="65"/>
+    <line x1="660" y1="65" x2="678" y2="65"/>
+    <line x1="840" y1="65" x2="858" y2="65"/>
+    <line x1="300" y1="205" x2="318" y2="205"/>
+    <line x1="480" y1="205" x2="498" y2="205"/>
+    <line x1="660" y1="205" x2="678" y2="205"/>
+    <line x1="840" y1="205" x2="858" y2="205"/>
+    <line x1="300" y1="355" x2="318" y2="355"/>
+    <line x1="480" y1="355" x2="498" y2="355"/>
+    <line x1="660" y1="355" x2="678" y2="355"/>
+    <line x1="840" y1="355" x2="858" y2="355"/>
+    <!-- Each loop repeats: the new model samples the next round -->
+    <polyline points="940,240 940,262 220,262 220,242"/>
+    <polyline points="940,390 940,412 220,412 220,392"/>
+  </g>
+  <g fill="#666" font-size="11.5" text-anchor="middle">
+    <text x="580" y="278">repeat: the new model samples the next round (3 rounds)</text>
+    <text x="580" y="428">repeat: the new adapter samples the next batch (3 passes of 10 steps)</text>
+  </g>
+</svg>
