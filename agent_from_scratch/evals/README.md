@@ -1,272 +1,412 @@
-# Evaluating the agent
+# Evaluating and post-training the agent
 
-## Task data: train, val and test
+This folder holds everything after the agent itself: a generated benchmark with an independent
+verifier, the export of verified runs as training data, a LoRA trainer, expert iteration, a
+GRPO pilot, two external benchmarks and the report that builds the results tables.
 
-Tasks are split by shape. Train has 320 tasks from 16 shapes (80 from Item 1's 4 shapes, 240
-from the 12 Item 4 added). Val is Stage 8's 64 tasks. Test has 140 tasks: Stage 8's 60, and 80
-on 4 shapes that Stage 9 reserved before any training data existed.
-Generate initial workspaces and private contracts, optionally running real tool/verifier gates
-with a scripted model (no model weights or API calls):
+- [Quick start](#quick-start)
+- [Datasets](#datasets): what every set contains and which stage used it
+- [Adding a task type](#adding-a-task-type)
+- [Building SFT data](#building-sft-data): teacher runs, self-sampled runs, public data
+- [Training an adapter](#training-an-adapter), and [on a rented GPU](#training-on-a-rented-gpu)
+- [Expert iteration and GRPO](#expert-iteration-and-grpo)
+- [External test](#external-test)
+- [Reproduce the results](#reproduce-the-results)
+- [When you change the agent](#when-you-change-the-agent)
+- [Reading a run directory](#reading-a-run-directory)
+
+## Quick start
+
+Everything runs from the repository root through one entry point:
 
 ```sh
-python -m agent_from_scratch.evals dataset --output outputs/NEW_STAGE9_DATA --check
-python -m unittest agent_from_scratch.tests.test_stage9_tasks agent_from_scratch.tests.test_stage9_dataset -v
+python -m agent_from_scratch.evals COMMAND --output outputs/NEW_NAME [options]
 ```
 
-Each task's `workspace/` contains only its inputs; `task.json` beside it contains private
-expectations. Do not send the contract or scripted solution to the actor/teacher. A successful
-scripted gate is not a training demonstration or a real-model capability measurement.
+`--output` must be a new directory; evidence is never overwritten.
 
-For Item 2, the ordinary model runner accepts `bench --split train`. Test runs require
-`--final --manifest outputs/NEW_STAGE9_DATA/manifest.json` and the frozen vLLM protocol. They
-reject drift and limit overrides; use val for selection and reserve test results for the
-formal base/adapter comparison. The generated manifest is separate
-from the original `evals/bench/manifest.json`. Regeneration creates a new directory/version;
-never overwrite earlier evidence or silently refresh a freeze to hide changes.
+| I want to know… | Command | Needs | Time |
+|---|---|---|---|
+| Do the units still work? | `python -m unittest discover -s agent_from_scratch/tests -q` | nothing | under a minute |
+| Do the task generator and verifier work? | `dataset --output DIR --check`: builds every task and runs a scripted correct solution and two cheats through the real agent loop | nothing | about a minute |
+| Did my change break what the agent could do? | `bench --split val` | a model | about 12 min on a 16 GB Mac with a local Qwen3-4B GGUF |
+| How reliable is a model across samples? | `bench --seed N` per seed, then `aggregate DIR...`: pass@1, pass^k, pass@k, mixed-outcome tasks | a model | — |
+| How do two runs differ? | `compare A B`: paired outcomes, exact McNemar p, trajectory shape | nothing | instant |
+| Does context management hold when evidence outgrows the window? | `pressure`: 4 tasks over 9 files of about 15k characters | a model | 15–25 min |
+| How do I turn runs into SFT data? | `export --track teacher\|rft RUN...` | nothing | seconds |
+| How do I train an adapter? | `train --examples DATASET` | a CUDA GPU (24 GB+) | 17 min to 5 h |
+| How do I build the results tables? | `report --arm NAME=RUN,RUN,RUN ...` | nothing | seconds |
 
-## Stage 9 training data
+`bench` runs one model on one split: `--backend llama_cpp` (default, a local GGUF, for pipeline
+checks), `--backend vllm --base-url URL [--adapter NAME]` (the measured protocol), or
+`--backend teacher` (an API model, train split only). `--tasks a,b` runs a subset.
+
+## Datasets
+
+### How a task is made
+
+A **task** is a small disposable workspace (a few text or JSON files), a prompt, the tools the
+agent may use, and a private contract that the agent never sees: the expected final answer, the
+expected file contents, the facts the agent must have read, and what must stay unchanged. The
+verifier checks the contract after the run, from the files and the trace, not from what the
+agent claims.
+
+A **task type** (called a *skeleton* or *shape* in the code) is a generator: given a seed, it
+writes a new workspace with different values, file names, distractors and fault positions, and
+the matching contract. Every type also has a scripted correct solution and two cheats (answer
+without reading, and read then answer wrongly). A type is accepted only when, through the real
+agent loop, the scripted solution passes and both cheats fail.
+
+**Sets are split by type, not by task.** Two tasks of one type differ only in their values, so a
+random split would put near-copies of test tasks into training. No type appears in more than one
+of train, val and test, and each new type records the closest existing type and how it differs.
+
+Every type belongs to one **family**:
+
+| Family | What it tests | Example |
+|---|---|---|
+| inspection | find and combine facts across files | `three_source_join`: read `request.json` for a person, `directory.json` for their email and team, `locations.json` for the team's city; reply `email\|city` |
+| updates | change exactly what was asked, nothing else | `rename_key_all_files`: rename one key in every config file under a folder |
+| recovery | meet a failure and recover | `transient_read_failure`: the first read fails once; the agent must retry, not guess |
+| stopping | know when not to act, or when to report | `missing_file_report`: only a backup file exists; reply `MISSING` instead of reading the backup as if it were current |
+
+Some types come in **clean/fault pairs**: the same files, with one tool call made to fail in the
+fault variant. Some come in **act/ask pairs**: the same records, with the fact needed to act
+either established (in an earlier turn, a file or a tool result) or genuinely missing, where the
+right reply is to ask.
+
+### Three groups of task types
+
+| Group | What it is | Example |
+|---|---|---|
+| **Single-turn** | One request, 2–6 dependent tool calls over config files and the records of a general assistant (inventories, applications, bookings, rosters, expenses) | `merge_record_requests`: merge two change requests into a contact record, or change nothing and reply `NEED_INPUT` when they conflict |
+| **Multi-turn** | Follow-up user turns that refer to earlier ones ("change *that* customer's phone"), in act/ask pairs | `followup_same_record`: turn 1 names a customer, or only counts customers in a city; turn 2 changes "that customer's" phone, or replies `NEED_INPUT` |
+| **Leveled** | Harder types with a difficulty level 1–5 (more records, longer rule chains, more turns); some are dialogues | `ordered_migration`: apply the N ordered steps of `plan.txt` to `data.json`, where later steps name keys that earlier steps created |
+
+A leveled type's level is set by **calibration** on the model being trained: it is sampled 8
+times on every type and level, on calibration seeds that no other set uses, and the level whose
+pass rate is closest to 0.5 (inside 0.25–0.75) is kept, so that the model solves about half. A
+type with no level in that band is dropped. The chosen levels are in
+[`bench/levels.json`](bench/levels.json).
+
+Most types are scored with three checks beyond the answer and the files: the facts a decision
+rests on are read before the first write, a fault variant passes only if its fault was met, and
+a claim failing either counts as a false completion. The 18 single-turn types of the first
+benchmark (the 64 single-turn val tasks and 60 of the test tasks) keep the scoring they were
+frozen with.
+
+### The sets
+
+| Set | Single-turn | Multi-turn | Leveled | In all |
+|---|---|---|---|---|
+| **train** | 380 tasks, 19 types | 40 tasks, 2 types | 80 tasks, 4 types | 500 |
+| **val** (every choice is made here) | 64 tasks, 8 types | 40 tasks, 2 types | 40 tasks, 2 types | 144 |
+| **test** (run once per final model) | 140 tasks, 14 types | — | — | 140 |
+| **hard test** (run once per final model) | — | — | 80 tasks, 4 types | 80 |
+
+- **Train, single-turn**: 16 record-keeping types, three to five per family, including four
+  where nothing needs doing, one that reports a missing file and one that finds a file moved
+  after a failed read; `lookup_then_act`, a single-turn act/ask pair; and two JSON-structure
+  edits (`json_remove_array_item`, `json_nested_key_add`).
+- **Train, multi-turn**: `followup_same_record`, `followup_file_from_listing`.
+- **Train, leveled**: `ordered_migration` (L1), `rule_table_apply` (L1), `long_edit_dialogue`
+  (L2, a dialogue), `fault_amid_reconcile` (L3).
+- **Val**: `pointer_lookup`, `single_field_edit`, `check_fix_recheck`, `no_op_correct_config`,
+  `max_timeout_service`, `delete_key`, `transient_list_failure`, `locked_config_stop`
+  (single-turn); `followup_move_meeting`, `followup_carry_value` (multi-turn); `flag_rollout`
+  (L2) and `itinerary_dialogue` (L5, a dialogue) (leveled).
+- **Test**: `deep_chain_lookup`, `grep_locate`, `sum_across_files`, `pointer_nested_edit`,
+  `rename_key_all_files`, `append_list_item`, `transient_read_failure`, `flaky_write_retry`,
+  `ambiguous_choice_stop`, `missing_file_report` (6 tasks each), and `three_source_join`,
+  `merge_record_requests`, `backup_record_lookup`, `unit_complete_total` (20 each). The test set
+  was fixed before any training data existed and never changed.
+- **Hard test**: `config_patch_plan` (L1, an ordered INI patch), `shipping_fee_table` (L1, a
+  first-match fee table), `ledger_audit_fault` (L2, a ledger audit with a failed read) and
+  `support_dialogue` (L4, a multi-turn support ticket), in formats no train or val type uses.
+- **Calibration**: every leveled type at all five levels, seeds 100–105. It only chooses levels;
+  it is never trained on or reported.
+
+Generate any of them, with the gates, without a model:
+
+```sh
+python -m agent_from_scratch.evals dataset --output outputs/NEW_DATA --check
+```
+
+Each task's `workspace/` holds only its inputs; `task.json` beside it holds the private contract.
+Never send the contract or the scripted solution to a model. A scripted pass checks the
+generator and verifier, not a model's ability.
+
+### External data
+
+| Data | Used as | Notes |
+|---|---|---|
+| **Teacher trajectories**: DeepSeek (`deepseek-flash`) running our agent loop on the train tasks | SFT data | only runs the verifier passed; the context budget is counted in the student's tokens, so the harness behaves as it would for the student |
+| **Self-sampled trajectories**: the model being trained, 8 samples per train task | expert-iteration data, GRPO rollouts | verified runs only for expert iteration; GRPO uses every rollout of a task with mixed outcomes |
+| **When2Call** `train_pref` ([nvidia/When2Call](https://huggingface.co/datasets/nvidia/When2Call), CC-BY-4.0): the chosen reply of each row | SFT data | 2,000 rows: tool calls, follow-up questions and declines |
+| **Toucan** SFT config (Apache-2.0) | SFT data | 3,002 examples from 966 rows, a third with tools that do not fit the request |
+| **When2Call test** | external test | multiple choice (3,652 rows) and an LLM-judged free-answer set (300 rows) |
+| **BFCL multi-turn base** ([gorilla](https://github.com/ShishirPatil/gorilla)) | external test | 200 entries, played in a plain chat loop on BFCL's own simulated backends and scored by its checker; a local adaptation, not a leaderboard score |
+
+Public rows are converted into our format exactly: our system prompt, the row's tools in our
+template, one example per assistant turn. A row that cannot be converted exactly is dropped and
+counted, never repaired. Nothing derived from a test set is ever trained on.
+
+### What each model was trained and chosen on
+
+| Model | Trained on | Chosen on |
+|---|---|---|
+| **SFT-1** | teacher trajectories on the 320 single-turn record-keeping tasks, plus When2Call and Toucan | the 64 single-turn val tasks |
+| **SFT-2** | SFT-1's data, with teacher trajectories on 419 of the 420 single-turn and multi-turn train tasks | val, single-turn and multi-turn (104 tasks) |
+| **EI-3** | SFT-2's data plus its own verified rollouts on the 80 leveled train tasks, three rounds | all 144 val tasks, the leveled 40 read first |
+| **GRPO** | online updates from SFT-2's adapter on the same 80 leveled tasks | all 144 val tasks; not run on held-out sets |
+
+Every final model ran once on the test, the hard test and the external test. Val grew with the
+training data: a single-turn val cannot see a model that asks instead of acting in a
+conversation, and once SFT-2 solved nearly every single- and multi-turn val task, the leveled val
+types gave the comparison room to move.
+
+## Adding a task type
+
+A type lives in [`bench/skeletons.py`](bench/skeletons.py) (single-turn and multi-turn) or
+`bench/shapes_*.py` (leveled). It has three parts:
+
+1. **A builder** `build(rng, root, ctx) -> Task` that writes the workspace under `root` from
+   `rng` and returns the [`Task`](bench/spec.py): `prompt`, the allowed `tools`, and an `Expect`
+   with `answer` (`"required"`: the reply must be exactly the token; `"advisory"`: the token
+   must appear), `files` (expected final contents), `evidence` (strings that must appear in some
+   successful tool output, i.e. what must have been read), `process` rules such as
+   `no_write_attempts`, and optionally a `Fault` and `followups` (later user turns). Leveled
+   builders also take `level`.
+2. **A scripted `solution(task)`** that returns the model responses a correct run produces. It
+   is used only by the gate tests, never as training data.
+3. **Registration** with a family and a split, and the name in
+   [`bench/splits.json`](bench/splits.json). A leveled type is registered only once
+   `levels.json` names its level.
+
+Then run the gates: `python -m unittest agent_from_scratch.tests.test_bench_skeletons` and
+`dataset --check`. The scripted solution must pass, and answering without reading and answering
+wrongly must both fail. Rules that keep the sets honest:
+
+- Record the closest existing type in the other splits and how yours differs.
+- Never add or retune a test type after looking at test results.
+- Any change to a frozen type, tool, prompt, limit or the verifier needs a new freeze.
+
+`pressure` tasks are separate: a builder in [`pressure.py`](pressure.py) fills a temporary
+directory and returns `(prompt, expected_answer)`.
+
+## Building SFT data
 
 Two tracks collect rollouts on the train split, and `export` turns the verifier-passed ones into
 `(prompt, completion)` examples, one per model request:
 
 ```sh
-# Teacher track: an API model (DeepSeek) inside the same harness, tools and verifier.
-# Needs DEEPSEEK_API_KEY; the student GGUF only supplies the tokenizer for the context budget.
-TMPDIR=/tmp python -m agent_from_scratch.evals bench --backend teacher --split train --seed 0 \
-  --student-gguf <Qwen3-4B-Instruct-2507 GGUF> --output outputs/NEW_TEACHER_RUN
-# RFT track: N samples of the base checkpoint on vLLM, one run per seed (runbook: docs/benchmark.md).
-python -m agent_from_scratch.evals bench --backend vllm --split train --seed 3 --output outputs/NEW_RFT_RUN_S3
+# Teacher: an API model inside the same loop, tools and verifier. Needs DEEPSEEK_API_KEY; the
+# student GGUF only supplies the tokenizer for the context budget.
+python -m agent_from_scratch.evals bench --backend teacher --split train --seed 0 \
+  --student-gguf MODEL.gguf --output outputs/NEW_TEACHER_RUN
+# Self-sampled: the model being trained on vLLM, one run per seed.
+python -m agent_from_scratch.evals bench --backend vllm --split train --seed 3 --output outputs/NEW_RUN_S3
 # One dataset per track: examples.jsonl plus metadata.json (sources and the funnel).
-python -m agent_from_scratch.evals export --track teacher --output outputs/NEW_SFT_TEACHER outputs/NEW_TEACHER_RUN
+python -m agent_from_scratch.evals export --track teacher --output outputs/NEW_SFT outputs/NEW_TEACHER_RUN
 ```
 
-`bench --backend teacher` refuses every split but train, and `export` refuses every run that is
-not on the train split, every scripted fixture, and a run from another backend than the track's
-(unless `--pilot` marks the output as a pipeline check). `--flawed-turns drop` keeps a verified
-rollout that holds the model's own failed tool call or a final answer that is not format-exact,
-and leaves only that turn out; the default `reject` refuses the whole rollout. `--max-per-task K`
-caps the distinct trajectories kept per task. Design, decisions and results:
-[docs/STAGE9_ITEM2_PLAN.md](../docs/STAGE9_ITEM2_PLAN.md).
+The prompt is exactly what the model saw (the recorded input messages, rendered by the inference
+template), and the completion is the assistant turn that followed. `export` refuses runs that
+are not on the train split, scripted fixtures, and runs from another backend than the track's.
+`--flawed-turns drop` keeps a verified rollout that holds the model's own failed tool call and
+leaves out only that turn; the default `reject` drops the whole rollout. `--max-per-task K`
+caps the trajectories kept per task.
 
-## Stage 9 public tool-use data
-
-`public` turns rows of a public dataset into examples in `export`'s format, and `mix` combines
-them with our own examples into one dataset that `train` reads unchanged:
+Public data and mixing:
 
 ```sh
-# Our system prompt, the row's tools in our template, tool results in our tool-result envelope,
-# one example per assistant turn. A row that cannot be converted exactly is dropped and counted.
 python -m agent_from_scratch.evals public --source when2call-pref --input when2call_train_pref.jsonl \
-  --revision SHA --student-gguf <Qwen3-4B-Instruct-2507 GGUF> --max-examples 2000 --output outputs/NEW_PUBLIC
-# Our examples repeated k times, so that they come closest to a third of the rows.
-python -m agent_from_scratch.evals mix --own outputs/NEW_SFT_TEACHER --public outputs/NEW_PUBLIC ... \
+  --revision SHA --student-gguf MODEL.gguf --max-examples 2000 --output outputs/NEW_PUBLIC
+# Our examples repeated k times, so that they come closest to the --own-share of the rows.
+python -m agent_from_scratch.evals mix --own outputs/NEW_SFT --public outputs/NEW_PUBLIC ... \
   --output outputs/NEW_MIX
 ```
 
-Sources: `when2call-sft`, `when2call-pref` (the chosen reply) and `toucan`. Rows are visited in a
-`--seed` order, whole rows at a time. Design and decisions:
-[docs/STAGE9_ITEM4_PLAN.md](../docs/STAGE9_ITEM4_PLAN.md).
+Sources: `when2call-sft`, `when2call-pref` (the chosen reply) and `toucan`. `--cap
+question=200` limits one reply category.
 
-## Stage 9 external test
-
-Two scorers outside our harness, run against the vLLM server like `bench` (`--adapter NAME`, or
-none for the base). Nothing derived from either set is ever trained on.
+## Training an adapter
 
 ```sh
-# When2Call (dataset nvidia/When2Call, test/): the repository's own MCQ scoring for Qwen, and its
-# LLM-as-a-judge path (answers on the server, then DeepSeek classifies them; needs DEEPSEEK_API_KEY).
-python -m agent_from_scratch.evals when2call mcq --data when2call_test_mcq.jsonl --output outputs/NEW_MCQ
-python -m agent_from_scratch.evals when2call generate --data when2call_test_llm_judge.jsonl --output outputs/NEW_GEN
-python -m agent_from_scratch.evals when2call judge --responses outputs/NEW_GEN --output outputs/NEW_JUDGE
-# BFCL multi-turn base, a local adaptation (never an official score): BFCL's backends and checker,
-# from a checkout of ShishirPatil/gorilla.
-python -m agent_from_scratch.evals bfcl --bfcl-root gorilla/berkeley-function-call-leaderboard --output outputs/NEW_BFCL
-```
-
-Design, decisions and the Stage 9 results: [docs/STAGE9_ITEM5_6_PLAN.md](../docs/STAGE9_ITEM5_6_PLAN.md).
-
-## Stage 9 adapter training
-
-`train` turns one exported dataset into LoRA adapters, and `replay` checks a served adapter
-against the examples it was trained on:
-
-```sh
-# Needs requirements-train.txt (torch, transformers, peft). One adapter per epoch, in PEFT
-# format, plus train_log.jsonl and metadata.json (dataset hash, selection, recipe, versions).
-python -m agent_from_scratch.evals train --examples outputs/NEW_SFT_TEACHER --output outputs/NEW_ADAPTERS
+# Needs requirements-train.txt (torch, transformers, peft), or vLLM's own stack on a GPU pod.
+# One adapter per epoch, in PEFT format, plus train_log.jsonl and metadata.json.
+python -m agent_from_scratch.evals train --examples outputs/NEW_SFT --output outputs/NEW_ADAPTERS
 # Against a vLLM server started with --lora-modules NAME=outputs/NEW_ADAPTERS/epoch-3:
-python -m agent_from_scratch.evals replay --examples outputs/NEW_SFT_TEACHER --adapter NAME \
+python -m agent_from_scratch.evals replay --examples outputs/NEW_SFT --adapter NAME \
   --ids outputs/NEW_ADAPTERS/metadata.json --output outputs/NEW_REPLAY.json
-python -m agent_from_scratch.evals bench --backend vllm --split val --seed 0 --adapter NAME --output outputs/NEW_VAL_RUN
+python -m agent_from_scratch.evals bench --backend vllm --split val --seed 0 --adapter NAME --output outputs/NEW_VAL
 ```
 
-The loss falls on the assistant's completion only; the prompt, with its tool results and
-runtime feedback, is context. `train` refuses a pilot dataset without `--pilot`, a dataset
-exported under another chat template, and a row longer than the window, which is never
-truncated. `--max-per-skeleton N` caps the examples per skeleton in whole trajectories, and
-`--limit N` with `--save-last` is the overfit smoke test. `replay` asks for a greedy
-continuation of each prompt and reports the exact matches; omit `--adapter` for the base
-model. Its rate is a fit measure on training prompts, never a capability result. Design and
-decisions: [docs/STAGE9_ITEM3_PLAN.md](../docs/STAGE9_ITEM3_PLAN.md). How to run it on a GPU:
-the next section.
+The recipe: LoRA rank 16 on every attention and MLP projection of the bf16 base; the loss falls
+on the assistant's completion tokens only (the prompt, with its tool results, is context); AdamW
+at $10^{-4}$, 10% warmup then cosine decay, gradient clipping at 1.0, three epochs, gradient
+checkpointing on. `train` refuses a dataset exported under another chat template and a row
+longer than the window (never truncated). `--limit 8 --epochs 40 --save-last` is the overfit
+smoke test. `replay` checks that a served adapter reproduces its training targets greedily: a
+fit check, never a capability result. Pick the epoch on val seed 0.
 
-### Training on a rented GPU (RunPod)
+### Training on a rented GPU
 
 Training and every adapter evaluation need a CUDA GPU. We rent one RunPod pod per session and
-drive it from the Mac with `runpodctl`. The 4B model in bf16 needs a GPU with at least 24 GB; we
-use an A40 (48 GB). A session has six parts:
+drive it from the Mac with `runpodctl`. The 4B model in bf16 needs at least 24 GB; an A40
+(48 GB) serves every model and trains small datasets, and training SFT-1 or SFT-2, whose
+longest rows hold 23k–30k tokens, needs an A100 80 GB.
 
-1. **Prepare.** `runpodctl` 2.14 or later with its API key (`runpodctl doctor`), and your SSH
-   key added with `runpodctl ssh add-key` *before* the pod is created. Commit first: the pod
-   runs a shallow clone of the branch's last commit.
-2. **Rent.** `--min-cuda-version 13.0` is required, because vLLM 0.30.0 installs PyTorch for
-   CUDA 13. If no instance is available, `runpodctl gpu list` shows where each GPU is in stock.
-   The pod cannot stop itself, so start a cost guard on the Mac
-   (`sleep 7200 && runpodctl pod stop POD_ID`) and copy results back well before it fires.
+1. **Prepare.** `runpodctl` 2.14 or later (`runpodctl doctor`), and your SSH key added with
+   `runpodctl ssh add-key` before the pod is created. Commit first: the pod runs a clone of the
+   last commit.
+2. **Rent**, with `--min-cuda-version 13.0` (vLLM 0.30.0 installs PyTorch for CUDA 13). The pod
+   cannot stop itself, so start a cost guard on your machine (`sleep 7200 && runpodctl pod stop
+   POD_ID`). **Keep that machine awake and on power**: a laptop lid closed on battery freezes the
+   guard and the pod bills idle.
 
    ```sh
    runpodctl pod create --name NAME --image runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404 \
      --gpu-id "NVIDIA A40" --cloud-type SECURE --min-cuda-version 13.0 \
      --container-disk-in-gb 60 --ports "22/tcp" --wait --wait-timeout 15m
-   runpodctl ssh info POD_ID   # the ssh command: host, port and key
    ```
 
-3. **Ship and install.** Copy a shallow clone (tar it with `COPYFILE_DISABLE=1` on macOS) and
-   the exported datasets, which are not in git. On the pod, `chown -R root:root` the clone,
-   then install into a venv. Do not install `requirements-train.txt` there: vLLM pins its own
-   torch and transformers, and an adapter should be trained with the stack that serves it.
+3. **Install** into a venv on the pod. Do not install `requirements-train.txt` there: vLLM pins
+   its own torch and transformers, and an adapter should be trained with the stack that serves
+   it. Set `OMP_NUM_THREADS=8`; a container that reports the host's 128 cores stalls the CPU
+   tests otherwise.
 
    ```sh
+   python3 -m venv /root/venv && /root/venv/bin/pip install -q uv && . /root/venv/bin/activate
    uv pip install vllm==0.30.0 peft -r agent_from_scratch/requirements.txt
-   python -m unittest agent_from_scratch.tests.test_sft_tensorize \
-     agent_from_scratch.tests.test_sft_train agent_from_scratch.tests.test_sft_replay   # none skipped
    ```
 
-4. **Train** before starting the server, which takes the GPU memory. Run the overfit smoke
-   first (`train --limit 8 --epochs 40 --accumulate 4 --lr 3e-4 --save-last`, `last_loss` below
-   0.05); its `elapsed_seconds` tells you how long the full runs will take. Start long runs with
-   `setsid nohup ... &` so a dropped SSH session does not stop them. The three Stage 9
-   candidates (teacher-v3, teacher-wide, mix) are trained, one after the other, by
-   [`scripts/train_stage9_adapters.sh`](../scripts/train_stage9_adapters.sh); its header gives
-   the GPU each needs and how long each takes.
-5. **Serve and evaluate.** Use the Stage 8 server command unchanged and add one
-   `--lora-modules NAME=ADAPTER_DIR` per adapter. Then `replay --adapter NAME` checks the reload,
-   and `bench --backend vllm --adapter NAME` runs the evaluation.
-6. **Copy back and delete.** Copy `outputs/` into a new local directory and check it, then
-   `runpodctl pod delete POD_ID`, confirm `runpodctl pod list --all` is empty, and read the cost
-   from the balance in `runpodctl user`.
+4. **Train** before starting the server, which takes the GPU memory. Start long runs with
+   `setsid nohup ... &`. [`scripts/train_stage9_adapters.sh`](../scripts/train_stage9_adapters.sh)
+   trains the SFT adapters and lists the GPU and time each needs.
+5. **Serve and evaluate** with the [server command](#the-server-command) below, then
+   `bench --backend vllm --adapter NAME`.
+6. **Copy back and delete.** Copy `outputs/` back and check it, then `runpodctl pod delete`, and
+   confirm `runpodctl pod list --all` is empty.
 
-The server command, the reasons for each setting and the traps that cost a retry are in the
-[GPU runbook in docs/benchmark.md](../docs/benchmark.md#runbook-control-baseline-on-a-rented-gpu-as-run-september-27-2026).
-The exact commands of each Stage 9 session are in its plan (Item 3: Step 8 and Appendix F of
-[docs/STAGE9_ITEM3_PLAN.md](../docs/STAGE9_ITEM3_PLAN.md)).
+### The server command
 
-## Stage 10 expert iteration and the GRPO pilot
-
-Both arms start from M1 (mix) and sample the whole train split at 8 seeds; they are compared on
-val only. Design and decisions: [docs/STAGE10_PLAN.md](../docs/STAGE10_PLAN.md).
+Every result was measured with this one command; use it unchanged, adding one
+`--lora-modules NAME=DIR` pair per adapter:
 
 ```sh
-# How good a data generator is a model? Both counts: `passed`, and GRPO's strict reward
-# (passed, with the answer exactly as requested; a wrapped advisory answer counts as a failure).
+PATH=/root/venv/bin:$PATH VLLM_USE_FLASHINFER_SAMPLER=0 setsid nohup \
+  vllm serve Qwen/Qwen3-4B-Instruct-2507 --revision cdbee75f17c01a7cc42f958dc650907174af0554 \
+  --dtype bfloat16 --max-model-len 32768 --enable-lora --max-lora-rank 64 --port 8000 \
+  --lora-modules SFT-1=outputs/sft-1 EI-3=outputs/ei-3 > vllm.log 2>&1 < /dev/null &
+curl -s localhost:8000/v1/models   # ready when it lists the model with max_model_len 32768
+```
+
+Two settings are required. The venv's `bin/` must be on `PATH`, because FlashInfer calls `ninja`
+by name. `VLLM_USE_FLASHINFER_SAMPLER=0`, because FlashInfer compiles its sampler at startup
+and the image's `nvcc` (CUDA 12.8) does not match PyTorch's CUDA 13; vLLM then samples with
+its PyTorch implementation, with the same decoding parameters. The served revision is not
+visible through the API, so this command is what pins it.
+
+## Expert iteration and GRPO
+
+Both start from one SFT adapter (SFT-2 in our runs) and sample the same train pool at 8 seeds. They are compared
+on val at an equal number of rollouts.
+
+```sh
+# How good a data generator is a model? `passed`, and GRPO's strict reward (passed, with the
+# answer exactly as requested).
 python -m agent_from_scratch.evals aggregate outputs/RUN-s0 ... outputs/RUN-s7 --strict
-# Self-SFT round: M1's data plus M_k's own verified rollouts, added once (the teacher set's
-# repeat factor is unchanged).
-python -m agent_from_scratch.evals mix --own TEACHER --public WHEN2CALL TOUCAN --self RFT_EXPORT --output DIR
-# GRPO: the 42 task IDs of one iteration (2 per skeleton; 10 iterations cover the split once),
-# then one optimizer step on that iteration's runs. The step writes the next adapter with the
-# AdamW state beside it (optimizer.pt); with no mixed group it copies the adapter and says skipped.
+# One expert-iteration round: the starting model's training data plus the latest model's own
+# verified rollouts, added once.
+python -m agent_from_scratch.evals mix --own TEACHER --public WHEN2CALL TOUCAN --self SELF_EXPORT --output DIR
+# GRPO: the task IDs of one iteration, then one optimizer step on that iteration's runs. The
+# step writes the next adapter with the AdamW state beside it (optimizer.pt).
 python -m agent_from_scratch.evals grpo tasks --pass 1 --iteration 0
 python -m agent_from_scratch.evals grpo step --runs outputs/IT-s0 ... outputs/IT-s7 \
   --adapter-in ADAPTER_DIR --output outputs/NEXT_STEP [--lr 1e-5]
 ```
 
 A GRPO row is one model request of a rollout whose task had mixed outcomes: the prompt as sent
-and the text as sampled (not the canonical rendering), weighted by the rollout's advantage
-$A_i = (r_i - \bar r)/\sigma_r$ within the task's group. On a pod, the drivers in `scripts/` run
-whole sessions: `stage10_sample.sh` (one model on the train split), `stage10_ei_round.sh K` (one
-self-SFT round) and `stage10_grpo.sh PASSES` (the pilot, resumable); `STAGE10_DRY=1` prints their
-commands without running them. `tests/test_grpo_exploits.py` checks that cheap cheats earn no
-reward.
+and the text as sampled, weighted by the rollout's advantage within its group of $G = 8$:
 
-## Reproduce Stage 11
+$$A_i = \frac{r_i - \bar r}{\sigma_r}$$
 
-The final numbers are in [docs/results.md](../docs/results.md). To reproduce one of them:
+The loss is the SFT loss with each row weighted by its advantage; one step per batch keeps it
+on-policy, so no importance ratio or clipping is needed. With $A_i = 1$ for verified rows and the
+rest dropped, it is SFT again.
 
-1. **Setup** on a GPU pod (previous section; one A40): a clean clone of the commit, the adapters
-   under `outputs/`, and `uv pip install vllm==0.30.0 peft -r agent_from_scratch/requirements.txt`.
-2. **Reset the fixtures and run the scripted gates.** Every task's workspace is rebuilt from its
-   seed, so there is no state to reset by hand. `dataset --check` writes the versioned freeze and
-   runs each train and test task's correct script and two cheats through the agent loop:
+On a pod, the drivers in `scripts/` run whole sessions: `stage10_sample.sh` (one model on the
+train split), `stage10_ei_round.sh K` (one round) and `stage10_grpo.sh PASSES` (resumable);
+`STAGE10_DRY=1` prints their commands without running them. `stage10_calibrate.sh` chooses the
+leveled types' levels. [`tests/test_grpo_exploits.py`](../tests/test_grpo_exploits.py) checks
+that cheap cheats earn no reward.
+
+## External test
+
+Run against the vLLM server like `bench` (`--adapter NAME`, or none for the base):
+
+```sh
+# When2Call: the benchmark's own multiple-choice scoring for Qwen, and its LLM-as-a-judge path
+# (answers from the server, then DeepSeek classifies them; needs DEEPSEEK_API_KEY).
+python -m agent_from_scratch.evals when2call mcq --data when2call_test_mcq.jsonl --output outputs/NEW_MCQ
+python -m agent_from_scratch.evals when2call generate --data when2call_test_llm_judge.jsonl --output outputs/NEW_GEN
+python -m agent_from_scratch.evals when2call judge --responses outputs/NEW_GEN --output outputs/NEW_JUDGE
+# BFCL multi-turn base, a local adaptation, from a checkout of ShishirPatil/gorilla.
+python -m agent_from_scratch.evals bfcl --bfcl-root gorilla/berkeley-function-call-leaderboard --output outputs/NEW_BFCL
+```
+
+## Reproduce the results
+
+The numbers are in [docs/results.md](../docs/results.md). To reproduce one of them:
+
+1. **Setup** on a GPU pod (one A40 is enough to serve): a clean clone, the adapters under
+   `outputs/`, and `uv pip install vllm==0.30.0 peft -r agent_from_scratch/requirements.txt`.
+2. **Freeze the tasks and run the gates.** Every workspace is rebuilt from its seed, so there is
+   no state to reset by hand:
 
    ```sh
    python -m agent_from_scratch.evals dataset --output outputs/NEW_DATA --check   # gates_passed: true
    ```
-3. **Reload the adapters.** Start the Stage 8 server command with one
-   `--lora-modules NAME=ADAPTER_DIR` per adapter (as `serve` in `scripts/stage10_lib.sh` does), then
-   check a reload with `replay --adapter NAME` against that adapter's training examples.
-4. **One test run**, under the freeze:
+
+3. **Reload the adapters**: the [server command](#the-server-command) with one
+   `--lora-modules NAME=DIR` per adapter,
+   then `replay --adapter NAME` against that adapter's training examples.
+4. **One test run** under the freeze (`--split hardtest` works the same way):
 
    ```sh
    python -m agent_from_scratch.evals bench --backend vllm --split test --final \
      --manifest outputs/NEW_DATA/manifest.json --seed 0 --adapter NAME --output outputs/NEW_TEST_S0
    ```
 
-   `--split hardtest` works the same way. Sampling differs between server sessions, so a rerun
-   matches the reported pass@1 closely, not exactly.
-5. **The tables.** `report` takes one run per seed for each arm:
+   `--final` refuses to run if the code, prompts, tasks or decoding differ from the freeze.
+   Sampling differs between server sessions, so a rerun matches pass@1 closely, not exactly.
+5. **The tables**, from one run per seed for each model:
 
    ```sh
    python -m agent_from_scratch.evals report --arm "A=RUN_S0,RUN_S1,RUN_S2" --arm "B=..." \
-     --pair A:B [--subset NAME=SKELETON,...] --output TABLE.md
+     --pair A:B [--subset NAME=TYPE,...] --output TABLE.md
    ```
 
-The whole session is `scripts/stage11_session.sh` (freeze, test, hard test, external), after
-`scripts/stage11_calibrate.sh` has chosen the hard test's levels. The pod cannot delete itself:
-keep the Mac awake, open and on power until the cost guard has copied the results back and
-deleted the pod. A closed lid on battery stops the guard and the pod bills idle.
+`scripts/stage11_session.sh` runs the whole final session (freeze, test, hard test, external).
 
-Start here. Everything runs from the **repository root** in the project environment through one
-entry point:
+| Model in the results | Adapter directory as trained |
+|---|---|
+| SFT-1 | `sft-mix-r1/epoch-2` |
+| SFT-2 | `sft-mix-v3-r1/epoch-2` |
+| EI-3 | `s10-m4` |
 
-```sh
-python -m agent_from_scratch.evals COMMAND --output outputs/NEW_NAME [options]
-```
-
-| I want to know… | Command | Model | Time (16 GB Mac, 32k window) |
-|---|---|---|---|
-| Did I break anything the agent could already do? | `bench --split val`: 64 generated tasks (inspection, updates, recovery, stopping) | real | ~12 min with the Qwen3-4B Q8_0 GGUF (`--model-path`, measured) |
-| What is the control checkpoint's baseline? | `bench --backend vllm` per seed in `BENCH_SEEDS`, then `aggregate`; `--split test --final --manifest FILE` refuses on manifest drift or a protocol mismatch. Runbook: [docs/benchmark.md](../docs/benchmark.md) | real (GPU) | see runbook |
-| How reliable is a split across samples? | `aggregate outputs/s0 outputs/s1 outputs/s2`: per-task pass counts, mean pass@1, pass^k, pass@k, mixed-outcome tasks | none | instant |
-| Does context management hold when evidence outgrows the window? | `pressure`: 4 tasks over 9 files of ~15k characters | real | ~15–25 min |
-| How do two runs differ? | `compare outputs/A outputs/B`: paired outcomes, exact McNemar p, trajectory shape | none | instant |
-| How do I collect teacher demonstrations? | `bench --backend teacher --split train --student-gguf FILE`: an API model in the same harness | API | ~7 min for the 80 train tasks (measured) |
-| How do verified train runs become SFT data? | `export --track {teacher,rft} RUN_DIR ...`: one example per model request, with provenance and a funnel | none | seconds |
-| How do I train an adapter on that data? | `train --examples DATASET_DIR`: LoRA with loss on the completion only, one adapter per epoch | real (GPU) | 3 epochs: teacher-v3 17 min on an A40; teacher-wide 28 min and mix 5.3 h on an A100 (measured) |
-| Does a served adapter reproduce its targets? | `replay --examples DATASET_DIR --adapter NAME`: greedy continuations against the targets | real (vLLM) | not yet measured |
-| Do the units still work? | `python -m unittest discover -s agent_from_scratch/tests -q` | scripted | seconds |
-| Does it feel right by hand? | `python -m agent_from_scratch.agent` (REPL) | real | — |
-
-`--output` must be a **new** directory outside the package; evidence is never overwritten.
-`--tasks a,b` runs a subset and `--seed N` fixes the per-request seed. `bench` always uses the
-frozen protocol in `config.py` (`BENCH_DECODING` sampling, `BENCH_N_CTX`), so `--seed` selects
-which sample a run is; `--backend llama_cpp` (default) runs the local GGUF for pipeline checks and
-`--backend vllm --base-url URL [--adapter NAME]` the control checkpoint; `--backend teacher` runs
-an API model on the train split only (Stage 9 training data, above). `pressure` keeps greedy
-decoding and takes `--n-ctx N` to override the window (recorded in `metadata.json`; runs at
-different windows are not comparable).
-
-## The loop when you change the agent
+## When you change the agent
 
 1. Unit tests. They are the only check that runs without a model.
 2. `bench --split val` before and after the change with the same `--seed`. Never tune against
-   `--split test`: it is reserved for weight comparisons (Stages 9–11).
-3. `pressure` if you touched context, compaction, planning, or a tool that returns bulky output.
-   `bench` cannot see these: its tasks stay far below the window's elision and summary triggers.
-4. `compare` the two runs. Read direction and trajectory, not the p-value; with a few dozen tasks
-   the exact McNemar test rarely reaches significance.
+   test: it is reserved for comparing weights.
+3. `pressure` if you touched context, compaction, planning, or a tool with bulky output. `bench`
+   cannot see these: its tasks stay far below the window's triggers.
+4. `compare` the two runs. Read direction and trajectory, not only the p-value: with a few dozen
+   tasks the exact McNemar test rarely reaches significance.
 
-To ablate one mechanism, keep everything else fixed and pass any `AgentLimits` field as JSON.
+To ablate one mechanism, keep everything else fixed and pass any `AgentLimits` field as JSON;
 `metadata.json` records what was on:
 
 ```sh
@@ -275,32 +415,6 @@ python -m agent_from_scratch.evals pressure --output outputs/t4
 python -m agent_from_scratch.evals compare outputs/t3 outputs/t4
 ```
 
-Run them one after another: each process holds about 6 GB, and two together slow both.
-
-## What is in this folder
-
-| File | Role |
-|---|---|
-| `__main__.py` | the `bench` / `freeze` / `aggregate` / `dataset` / `export` / `public` / `mix` / `train` / `replay` / `grpo` / `pressure` / `compare` dispatcher |
-| `sft/` | Stage 9 Items 2–4: `export.py` turns verified train rollouts into SFT examples (eligibility, selection, the `export` command); `public.py` converts public tool-use rows into the same format; `mix.py` combines our examples with public ones; `teacher.py` is the DeepSeek teacher backend behind `bench --backend teacher`; `tensorize.py` turns an example into a token row with labels on the completion only; `train.py` is the LoRA training loop (`fit`, and `policy_step` for GRPO) and the `train` command; `replay.py` is the `replay` command; `grpo.py` is Stage 10's GRPO pilot (strict reward, advantages, task rotation, rollout rows, the `grpo` command) |
-| `bench/` | generated benchmark: 38 skeletons (16 train = 320 tasks, 8 val = 64, 14 test = 140), one content-first verifier (`verify.py`), the trusted fixture check command (`check.py`), freeze manifest and protocol check (`manifest.py`), `aggregate.py` for k-sample runs. Shapes and rationale: [docs/STAGE8_DESIGN.md](../docs/STAGE8_DESIGN.md) |
-| `run.py` | `open_run`, `parse_limits` and `save`, which every suite shares |
-| `verify.py` | shared post-run measurement: `metrics()`, `snapshot()`, `exchanges()`; `pressure`'s answer verifier and `summarize()`. Never fed back to the agent |
-| `trajectory.py` | `profile()` and `compare()`; the `compare` command |
-| `pressure.py` | window-pressure suite; files are generated from `--seed`, nothing large is stored |
-| `core_lines.py` | core-size audit for the review trigger in [context-memory.md](../docs/context-memory.md); not an eval |
-
-The Stage 2B suite (17 hand-written tasks on frozen byte-offset file tools, 1 KiB reads and
-recorded web replay) was retired after Stage 8: `bench --split val` covers the same four families
-on the current tools. Its tasks, fixtures and runner are in git history at `ce2111a`, and its
-results are summarized in [docs/STAGE.md](../docs/STAGE.md) (Stage 2B).
-The live-network tool demos are in `examples/tools_smoke.py` and `examples/tools_demo.py`.
-
-`freeze` writes `evals/bench/manifest.json`, the Stage 8 freeze of the val tasks, the 60 Stage 8
-test tasks and the protocol (source, prompts, decoding, limits); a test asserts those tasks have
-not changed. A test run is checked against the versioned manifest that `dataset --check` writes:
-`bench --split test --final --manifest FILE` refuses to run if the tree has since drifted.
-
 ## Reading a run directory
 
 ```
@@ -308,32 +422,24 @@ outputs/NAME/
   metadata.json        settings (incl. n_ctx), seed, git revision, source/task hashes, limit overrides
   results.json         one record per task: passed, checks, stop_reason, metrics()
   summary.json         pass counts by family, requests, usage
-  trajectory.json      profile(): stop reasons, survival by request, action mix, mechanism use
+  trajectory.json      stop reasons, survival by request, action mix, mechanism use
   TASK_ID/             task.json, result.json, state/runs/*.jsonl (full trace)
 ```
 
-Fields to read first: `stop_reason` (`context_limit` is overflow, and the target is zero),
-`peak_context_ratio`, `elided_messages`, `compact_requests`, `plan_updates`, `stuck_reminders`,
-and `actions` (one label per model request: explore, modify, execute, plan, answer or error).
-`pressure` also records `answer_found`: `passed` needs the exact format, and `answer_found`
-says whether the right value appeared at all, which separates a format slip from lost evidence.
+Read first: `stop_reason` (`context_limit` is overflow; the target is zero), `false_completion`
+(a reply claiming done while the checks fail), `asked_instead` (asked or declined where acting
+was expected), `peak_context_ratio`, `compact_requests`, and `actions` (one label per request:
+explore, modify, execute, plan, answer or error).
 
-## Adding a task
+## What is in this folder
 
-- **Bench**: write a builder and a scripted `solution()` in `bench/skeletons.py`, register it with
-  a split, and list it in `bench/splits.json`. The gate tests require the solution to pass and a
-  fake "done" to fail. Any change to a frozen skeleton, tool, prompt, limit or verifier needs a new
-  `freeze`; never add or retune a test skeleton after looking at test-split results.
-- **Pressure**: write a builder in `pressure.py` that fills a temporary directory and returns
-  `(prompt, expected_answer)`, then add it to `TASKS`. Keep the answer exact-match, and bump the
-  suite name in `main()` when you change an existing task's prompt.
-
-## Limits to remember
-
-- A greedy run is one sample, not several trials. Metal decoding is not bit-reproducible: two
-  identical configurations can differ on a task (one task took 4 requests in one run and 5 in
-  another with elision never firing).
-- The 7B model batches calls when asked to "read every file". Nine parallel reads exceed the
-  eight-call limit and end in invented answers, so pressure tasks ask for one call per response.
-- `bench` flags false completion automatically: a reply that claims done or a value while the
-  task's state checks fail.
+| Path | Role |
+|---|---|
+| `__main__.py` | the command dispatcher |
+| `bench/` | task types (`skeletons.py`, `shapes_*.py`), splits and levels, the verifier (`verify.py`), the freeze and protocol check (`manifest.py`), `aggregate.py` |
+| `sft/` | `export.py` (runs → examples), `public.py` (public rows → examples), `mix.py`, `teacher.py` (the API teacher backend), `tensorize.py` (the completion-only loss mask), `train.py` (LoRA training and the GRPO step), `replay.py`, `grpo.py` (reward, advantages, task rotation) |
+| `external/` | When2Call and BFCL scorers |
+| `report.py` | pass@1, paired comparisons, bootstrap intervals, the tables |
+| `pressure.py` | the context-pressure suite |
+| `trajectory.py` | `compare` and trajectory profiles |
+| `run.py`, `verify.py` | shared run setup and post-run measurement |

@@ -1,0 +1,7 @@
+# Python environment and downloaded models (the README downloads into models/)
+.venv/
+models/
+
+# Editor and OS files
+.vscode/
+.DS_Store
