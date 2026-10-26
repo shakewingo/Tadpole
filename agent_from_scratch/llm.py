@@ -76,7 +76,7 @@ class ResponseError(ValueError):
 
 
 def install_qwen_template(model, path: Path) -> tuple[Jinja2ChatFormatter, str]:
-    """Install the project's checked Qwen2.5 format on this instance only."""
+    """Install the project's checked Qwen chat format on this instance only."""
     from llama_cpp.llama_chat_format import Jinja2ChatFormatter
 
     if model.metadata.get("general.architecture") not in ("qwen2", "qwen3"):

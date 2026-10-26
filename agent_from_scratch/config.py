@@ -5,25 +5,23 @@ into `TurnResult.settings` and frozen for evaluation.
 """
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
 PROMPTS_DIR = _PACKAGE_DIR / "prompts"
 CHAT_TEMPLATE_PATH = PROMPTS_DIR / "qwen_chat.jinja"
-# local model path
-MODEL_PATH = (
-    _PACKAGE_DIR.parent
-    / "gz-data"
-    / "hub/models--Qwen--Qwen2.5-7B-Instruct-GGUF/snapshots/bb5d59e06d9551d752d08b292a50eb208b07ab1f"
-    / "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
-)
+# The local model, a GGUF file for llama.cpp: AGENT_MODEL_PATH, or Qwen3-4B-Instruct-2507 Q4_K_M
+# under models/ at the repository root, where the README downloads it.
+MODEL_PATH = Path(os.environ.get("AGENT_MODEL_PATH")
+                  or _PACKAGE_DIR.parent / "models" / "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")
 
 # Decoding defaults, matching what every entry point passes today.
 TEMPERATURE = 0.0
 MAX_TOKENS = 2048
-# Qwen2.5-7B's native window. The GGUF advertises 131072, which needs YaRN scaling
-# that is not configured here, and would also allocate a 7 GiB KV cache up front.
+# The benchmark's window (BENCH_N_CTX). The model accepts more, but a longer window allocates
+# a larger KV cache up front, which a 16 GB laptop cannot spare.
 N_CTX = 32768
 N_GPU_LAYERS = -1
 

@@ -4,11 +4,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.shakewingo.agent-telegram-bot</string>
+    <string>com.tadpole.telegram-bot</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/sh</string>
-        <!-- Replace with the absolute path to this repo on the Mac mini. -->
+        <!-- /REPLACE/WITH/REPO/PATH is the repository's absolute path (the README's sed fills it in). -->
         <string>/REPLACE/WITH/REPO/PATH/agent_from_scratch/scripts/run_telegram_bot.sh</string>
     </array>
     <key>RunAtLoad</key>
