@@ -1,5 +1,9 @@
 # Tadpole
 
+[![tests](https://github.com/shakewingo/Tadpole/actions/workflows/tests.yml/badge.svg)](https://github.com/shakewingo/Tadpole/actions/workflows/tests.yml)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/shakewingo/Tadpole/blob/main/agent_from_scratch/examples/walkthrough.ipynb)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 *An LLM agent built from scratch, and grown one stage at a time.*
 
 A tool-using agent in about 3,500 lines of plain Python that you can run around the clock from
@@ -37,7 +41,7 @@ Python 3.11 or later.
 git clone https://github.com/shakewingo/Tadpole.git
 cd Tadpole
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r agent_from_scratch/requirements.txt
+pip install -e .
 ```
 
 Run every command below from the repository root with the venv active.
