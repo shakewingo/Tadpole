@@ -1,0 +1,14 @@
+SPDX-License-Identifier: Apache-2.0
+
+Licensing and modification notice for qwen_chat.jinja
+
+Adapted from the Qwen2.5-7B-Instruct chat template published by the Qwen team,
+Alibaba Cloud, under Apache-2.0:
+https://huggingface.co/Qwen/Qwen2.5-7B-Instruct/blob/main/tokenizer_config.json
+
+This file was modified by Tadpole: tool-call instructions and the batch limit,
+serialized argument handling, and escaping of arguments and tool results.
+
+See ../../THIRD_PARTY_NOTICES.md and ../../LICENSES/Apache-2.0.txt.
+This adjacent notice preserves the template's exact bytes, which are recorded
+in the frozen evaluation protocol and training-data metadata.

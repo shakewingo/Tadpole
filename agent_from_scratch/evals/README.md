@@ -27,8 +27,8 @@ python -m agent_from_scratch.evals COMMAND --output outputs/NEW_NAME [options]
 
 | I want to know… | Command | Needs | Time |
 |---|---|---|---|
-| Do the units still work? | `python -m unittest discover -s agent_from_scratch/tests -q` | nothing | under a minute |
-| Do the task generator and verifier work? | `dataset --output DIR --check`: builds every task and runs a scripted correct solution and two cheats through the real agent loop | nothing | about a minute |
+| Do the units still work? | `python -m unittest discover -s agent_from_scratch/tests -q` | runtime dependencies; training tests also need `requirements-train.txt`; no model | — |
+| Do the task generator and verifier work? | `dataset --output DIR --check`: builds train/test tasks and runs a scripted correct solution and two cheats through the real agent loop | runtime dependencies; no model | about a minute |
 | Did my change break what the agent could do? | `bench --split val` | a model | about 12 min on a 16 GB Mac with a local Qwen3-4B GGUF |
 | How reliable is a model across samples? | `bench --seed N` per seed, then `aggregate DIR...`: pass@1, pass^k, pass@k, mixed-outcome tasks | a model | — |
 | How do two runs differ? | `compare A B`: paired outcomes, exact McNemar p, trajectory shape | nothing | instant |
@@ -126,11 +126,16 @@ frozen with.
 - **Calibration**: every leveled type at all five levels, seeds 100–105. It only chooses levels;
   it is never trained on or reported.
 
-Generate any of them, with the gates, without a model:
+Generate the train and test sets, with their gates, without a model:
 
 ```sh
 python -m agent_from_scratch.evals dataset --output outputs/NEW_DATA --check
 ```
+
+The dataset exporter currently selects only `train` and `test` (640 tasks in total).
+It does not export or gate the 144 validation or 80 hard-test tasks. Those generators are
+covered by the unit suite, and `bench --split val` / `bench --split hardtest` run them with a
+model. The generated manifest records all splits even though the exported workspaces do not.
 
 Each task's `workspace/` holds only its inputs; `task.json` beside it holds the private contract.
 Never send the contract or the scripted solution to a model. A scripted pass checks the
@@ -358,7 +363,15 @@ python -m agent_from_scratch.evals bfcl --bfcl-root gorilla/berkeley-function-ca
 
 ## Reproduce the results
 
-The numbers are in [docs/results.md](../docs/results.md). To reproduce one of them:
+The numbers are in [docs/results.md](../docs/results.md). This release includes the code,
+task generators and selected illustrative run data, but does not include the trained SFT-1,
+SFT-2 or EI-3 adapters, the full training datasets, or the full measured run archives.
+There are currently no download links for those artifacts. The historical `scripts/stage*`
+drivers assume local outputs from earlier sessions; they are not a complete fresh-clone
+reproduction pipeline. You can use the commands above to train and evaluate new adapters,
+but reproducing the published checkpoints and tables requires the original artifacts.
+
+With those artifacts available, the evaluation procedure is:
 
 1. **Setup** on a GPU pod (one A40 is enough to serve): a clean clone, the adapters under
    `outputs/`, and `uv pip install vllm==0.30.0 peft -r agent_from_scratch/requirements.txt`.
@@ -387,6 +400,9 @@ The numbers are in [docs/results.md](../docs/results.md). To reproduce one of th
    python -m agent_from_scratch.evals report --arm "A=RUN_S0,RUN_S1,RUN_S2" --arm "B=..." \
      --pair A:B [--subset NAME=TYPE,...] --output TABLE.md
    ```
+
+   Runs are paired by the seed each run's `metadata.json` records, in any order; the report
+   refuses an arm that repeats a seed, or a pair run with different seeds.
 
 `scripts/stage11_session.sh` runs the whole final session (freeze, test, hard test, external).
 

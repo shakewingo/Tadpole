@@ -1,6 +1,16 @@
-# Python environment and downloaded models (the README downloads into models/)
+# Python environment, caches and downloaded models (the README downloads into models/)
 .venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
 models/
+
+# Everything the commands write: sessions, traces, logs, run evidence, adapters, downloaded data
+outputs/
+
+# Local secrets such as deploy/telegram-bot.env; the *.env.example templates stay tracked
+*.env
+.env.*
 
 # Editor and OS files
 .vscode/

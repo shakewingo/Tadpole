@@ -16,8 +16,8 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/REPLACE/WITH/REPO/PATH/agent_from_scratch/outputs/telegram_bot.log</string>
+    <string>/REPLACE/WITH/REPO/PATH/outputs/telegram_bot.log</string>
     <key>StandardErrorPath</key>
-    <string>/REPLACE/WITH/REPO/PATH/agent_from_scratch/outputs/telegram_bot.log</string>
+    <string>/REPLACE/WITH/REPO/PATH/outputs/telegram_bot.log</string>
 </dict>
 </plist>
