@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import sys
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,13 +10,14 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import httpx
+from loguru import logger
 
 from agent_from_scratch.agent import Agent
 from agent_from_scratch.bots.telegram_bot import (
     BotConfig, DEFAULT_STATE_DIR, MAX_MESSAGE_LENGTH, SESSION_RESET_COMMANDS, TelegramAPIError,
-    TelegramClient, extract_message, format_reply, handle_update, is_allowed,
-    load_config_from_env, load_offset, poll_loop, process_updates, save_offset,
-    truncate_for_telegram,
+    TelegramClient, configure_logging, extract_message, format_reply, handle_update, is_allowed,
+    load_active_sessions, load_config_from_env, load_offset, poll_loop, process_updates, save_offset,
+    truncate_for_telegram, typing,
 )
 from agent_from_scratch.context import InstructionLoadError
 from agent_from_scratch.llm import LLM
@@ -66,6 +70,58 @@ class TelegramClientTests(unittest.TestCase):
         self.client._client.post.return_value = response
         with self.assertRaises(TelegramAPIError):
             self.client.send_message(42, "hello")
+
+    def test_an_http_error_names_telegrams_reason_but_never_the_token(self):
+        request = httpx.Request("GET", "https://api.telegram.org/bottest-token/getUpdates")
+        self.client._client.get.return_value = httpx.Response(
+            409, json={"ok": False, "description": "Conflict: terminated by other getUpdates request"},
+            request=request)
+        with self.assertRaises(TelegramAPIError) as caught:
+            self.client.get_updates(None)
+        self.assertIn("HTTP 409: Conflict: terminated by other getUpdates request", str(caught.exception))
+        self.assertNotIn("test-token", str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertTrue(caught.exception.__suppress_context__)  # httpx's URL is not chained in either
+
+    def test_send_chat_action_posts_typing(self):
+        response = Mock()
+        response.json.return_value = {"ok": True, "result": True}
+        self.client._client.post.return_value = response
+        self.client.send_chat_action(42)
+        args, kwargs = self.client._client.post.call_args
+        self.assertEqual(args[0], "https://api.telegram.org/bottest-token/sendChatAction")
+        self.assertEqual(kwargs["json"], {"chat_id": 42, "action": "typing"})
+
+
+class LoggingTests(unittest.TestCase):
+    def test_the_token_never_reaches_the_log(self):
+        lines = []
+        self.addCleanup(lambda: (logger.remove(),
+                                 logger.add(sys.stderr, level=os.environ.get("LOGURU_LEVEL", "DEBUG"))))
+        configure_logging("123:secret", sink=lines.append)
+        logger.warning("getUpdates failed for https://api.telegram.org/bot123:secret/getUpdates")
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn("123:secret", lines[0])
+        self.assertIn("bot<bot-token>/getUpdates", lines[0])
+
+
+class TypingTests(unittest.TestCase):
+    def test_shows_typing_at_once_and_repeats_until_the_block_ends(self):
+        client = Mock()
+        with typing(client, 7, every=0.01):
+            client.send_chat_action.assert_called_once_with(7, "typing")  # before any wait
+            time.sleep(0.1)
+        calls = client.send_chat_action.call_count
+        self.assertGreaterEqual(calls, 2)
+        time.sleep(0.05)
+        self.assertEqual(client.send_chat_action.call_count, calls)  # stopped with the block
+
+    def test_a_failed_action_does_not_interrupt_the_block(self):
+        client = Mock()
+        client.send_chat_action.side_effect = httpx.ConnectError("offline")
+        with typing(client, 7, every=0.01):
+            finished = True
+        self.assertTrue(finished)
 
 
 def _result(stop_reason, **kwargs):
@@ -205,6 +261,18 @@ class HandleUpdateTests(unittest.TestCase):
         self.assertFalse(kwargs["compact"])
         self.client.send_message.assert_called_once_with(1, "42")
 
+    def test_shows_typing_while_the_turn_runs(self):
+        def turn(*args, **kwargs):
+            self.client.send_chat_action.assert_called_with(1, "typing")
+            return TurnResult(messages=[], stop_reason=RunStopReason.FINAL_RESPONSE, final_answer="42")
+        self.agent.run_turn = Mock(side_effect=turn)
+        self._handle(_text_update(1, "what is 6*7?"))
+        self.client.send_message.assert_called_once_with(1, "42")
+
+    def test_commands_reply_without_typing(self):
+        self._handle(_text_update(1, "/compact"))
+        self.client.send_chat_action.assert_not_called()
+
     def test_new_command_switches_to_a_fresh_session_and_persists_it(self):
         self.agent.run_turn = Mock(return_value=TurnResult(
             messages=[], stop_reason=RunStopReason.FINAL_RESPONSE, final_answer="ok"))
@@ -307,6 +375,26 @@ class ProcessUpdatesTests(unittest.TestCase):
                                       offset_path=self.offset_path)
         self.assertEqual(next_offset, 3)
         self.assertEqual(self.client.send_message.call_count, 2)
+
+    def test_a_chosen_session_survives_a_restart(self):
+        sessions_path = Path(self.state_dir, "active_sessions.json")
+        process_updates([_text_update(1, "/new", update_id=1)], agent=self.agent, store=self.store,
+                        client=self.client, allowed_user_id=99, active_sessions={},
+                        compact_pending={}, offset_path=self.offset_path, sessions_path=sessions_path)
+        chosen = load_active_sessions(sessions_path)[1]
+        self.assertNotEqual(chosen, "1")
+        # A restarted bot starts from the saved choices, not from each chat's default session.
+        process_updates([_text_update(1, "hello", update_id=2)], agent=self.agent, store=self.store,
+                        client=self.client, allowed_user_id=99,
+                        active_sessions=load_active_sessions(sessions_path), compact_pending={},
+                        offset_path=self.offset_path, sessions_path=sessions_path)
+        self.assertEqual(self.agent.run_turn.call_args.kwargs["session_id"], chosen)
+
+    def test_missing_or_corrupt_session_choices_load_as_empty(self):
+        path = Path(self.state_dir, "active_sessions.json")
+        self.assertEqual(load_active_sessions(path), {})
+        path.write_text("[1, 2]")
+        self.assertEqual(load_active_sessions(path), {})
 
 
 class PollLoopTests(unittest.TestCase):

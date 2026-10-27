@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import json
 import os
+import sys
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +31,8 @@ MAX_MESSAGE_LENGTH = 4096
 _TRUNCATION_MARKER = "\n… [truncated]"
 SESSION_RESET_COMMANDS = {"/new", "/reset"}
 DEFAULT_STATE_DIR = "./outputs/telegram_sessions"
+# Telegram clears a chat action after about five seconds, or as soon as the bot sends a message.
+TYPING_REFRESH_SECONDS = 4.0
 
 
 class TelegramAPIError(RuntimeError):
@@ -34,7 +40,7 @@ class TelegramAPIError(RuntimeError):
 
 
 class TelegramClient:
-    """Thin wrapper over the two Bot API calls this bot needs."""
+    """Thin wrapper over the three Bot API calls this bot needs."""
 
     def __init__(self, token: str, *, base_url: str = DEFAULT_API_BASE, timeout: float = 35.0):
         self._base = f"{base_url}/bot{token}"
@@ -45,23 +51,36 @@ class TelegramClient:
         params: dict[str, Any] = {"timeout": poll_timeout}
         if offset is not None:
             params["offset"] = offset
-        response = self._client.get(f"{self._base}/getUpdates", params=params)
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise TelegramAPIError(f"getUpdates failed: {payload}")
+        payload = self._payload("getUpdates", self._client.get(f"{self._base}/getUpdates", params=params))
         result = payload.get("result")
         if not isinstance(result, list):
             raise TelegramAPIError(f"getUpdates returned no result list: {payload}")
         return result
 
     def send_message(self, chat_id: int | str, text: str) -> None:
-        response = self._client.post(f"{self._base}/sendMessage",
-                                      json={"chat_id": chat_id, "text": text})
-        response.raise_for_status()
+        self._payload("sendMessage", self._client.post(f"{self._base}/sendMessage",
+                                                       json={"chat_id": chat_id, "text": text}))
+
+    def send_chat_action(self, chat_id: int | str, action: str = "typing") -> None:
+        self._payload("sendChatAction", self._client.post(f"{self._base}/sendChatAction",
+                                                          json={"chat_id": chat_id, "action": action}))
+
+    @staticmethod
+    def _payload(method: str, response: httpx.Response) -> dict[str, Any]:
+        """The decoded reply, or TelegramAPIError with Telegram's own description. httpx's error
+        message would quote the request URL, and the URL holds the bot token."""
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            try:
+                description = response.json().get("description")
+            except ValueError:
+                description = response.reason_phrase
+            raise TelegramAPIError(f"{method} failed: HTTP {response.status_code}: {description}") from None
         payload = response.json()
         if not payload.get("ok"):
-            raise TelegramAPIError(f"sendMessage failed: {payload}")
+            raise TelegramAPIError(f"{method} failed: {payload}")
+        return payload
 
     def close(self) -> None:
         self._client.close()
@@ -113,6 +132,36 @@ def format_reply(result: TurnResult) -> str:
     return truncate_for_telegram(text)
 
 
+@contextmanager
+def typing(client: Any, chat_id: int | str, *,
+           every: float = TYPING_REFRESH_SECONDS) -> Iterator[None]:
+    """Show "typing…" in the chat until the block ends, so the user can see the bot is working.
+
+    The first action is sent at once; a background thread repeats it, since Telegram clears it
+    after a few seconds. The indicator is best effort: a failed call is logged, never raised.
+    """
+    def send() -> None:
+        try:
+            client.send_chat_action(chat_id, "typing")
+        except Exception as error:  # noqa: BLE001 - a missing indicator must not stop the turn
+            logger.debug("sendChatAction failed: {}", error)
+
+    stop = threading.Event()
+
+    def keep_typing() -> None:
+        while not stop.wait(every):
+            send()
+
+    send()
+    thread = threading.Thread(target=keep_typing, name="telegram-typing", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=every)
+
+
 def load_offset(path: Path) -> int | None:
     try:
         return int(path.read_text().strip())
@@ -123,6 +172,21 @@ def load_offset(path: Path) -> int | None:
 def save_offset(path: Path, offset: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(offset))
+
+
+def load_active_sessions(path: Path) -> dict[Any, str]:
+    """The session each chat chose with /new or /session, so a restart does not forget it."""
+    try:
+        return {int(chat_id): str(session_id)
+                for chat_id, session_id in json.loads(path.read_text()).items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def save_active_sessions(path: Path, active_sessions: Mapping[Any, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({str(chat_id): session_id
+                                for chat_id, session_id in active_sessions.items()}))
 
 
 def handle_update(update: dict[str, Any], *, agent: Agent, store: SessionStore,
@@ -167,8 +231,9 @@ def handle_update(update: dict[str, Any], *, agent: Agent, store: SessionStore,
 
     compact = compact_pending.pop(chat_id, False)
     try:
-        result = agent.run_turn(text, history, session_id=session_id, compact=compact,
-                                checkpoint=checkpoint)
+        with typing(client, chat_id):
+            result = agent.run_turn(text, history, session_id=session_id, compact=compact,
+                                    checkpoint=checkpoint)
     except InstructionLoadError as error:
         if compact:
             compact_pending[chat_id] = True  # the turn never started; a pending compact still applies
@@ -203,16 +268,20 @@ def load_config_from_env(env: Mapping[str, str]) -> BotConfig:
 
 def process_updates(updates: list[dict[str, Any]], *, agent: Agent, store: SessionStore,
                     client: Any, allowed_user_id: int, active_sessions: dict[Any, str],
-                    compact_pending: dict[Any, bool], offset_path: Path) -> int | None:
+                    compact_pending: dict[Any, bool], offset_path: Path,
+                    sessions_path: Path | None = None) -> int | None:
     """Handle one batch of updates; return the next getUpdates offset, or None if unchanged."""
     next_offset = None
     for update in updates:
+        chosen = dict(active_sessions)
         try:
             handle_update(update, agent=agent, store=store, client=client,
                           allowed_user_id=allowed_user_id, active_sessions=active_sessions,
                           compact_pending=compact_pending)
         except Exception:
             logger.exception("Failed to handle update {}", update.get("update_id"))
+        if sessions_path is not None and active_sessions != chosen:
+            save_active_sessions(sessions_path, active_sessions)
         next_offset = update["update_id"] + 1
         save_offset(offset_path, next_offset)
     return next_offset
@@ -222,7 +291,8 @@ def poll_loop(agent: Agent, store: SessionStore, client: Any, allowed_user_id: i
              *, state_dir: str, backoff_seconds: float = 5.0) -> None:
     offset_path = Path(state_dir, "telegram_offset.txt")
     offset = load_offset(offset_path)
-    active_sessions: dict[Any, str] = {}
+    sessions_path = Path(state_dir, "telegram_active_sessions.json")
+    active_sessions = load_active_sessions(sessions_path)
     compact_pending: dict[Any, bool] = {}
     while True:
         try:
@@ -234,9 +304,21 @@ def poll_loop(agent: Agent, store: SessionStore, client: Any, allowed_user_id: i
         new_offset = process_updates(updates, agent=agent, store=store, client=client,
                                      allowed_user_id=allowed_user_id,
                                      active_sessions=active_sessions,
-                                     compact_pending=compact_pending, offset_path=offset_path)
+                                     compact_pending=compact_pending, offset_path=offset_path,
+                                     sessions_path=sessions_path)
         if new_offset is not None:
             offset = new_offset
+
+
+def configure_logging(token: str, sink: Any = sys.stderr) -> None:
+    """Log as loguru does by default, but never write the bot token: a 24/7 bot's log is the file
+    people paste into an issue. Tracebacks leave out variable values for the same reason."""
+    def redact(record: dict[str, Any]) -> bool:
+        record["message"] = record["message"].replace(token, "<bot-token>")
+        return True
+
+    logger.remove()
+    logger.add(sink, level=os.environ.get("LOGURU_LEVEL", "DEBUG"), filter=redact, diagnose=False)
 
 
 def main() -> None:
@@ -244,6 +326,7 @@ def main() -> None:
         config = load_config_from_env(os.environ)
     except ValueError as error:
         raise SystemExit(str(error)) from error
+    configure_logging(config.token)
     Path(config.state_dir).mkdir(parents=True, exist_ok=True)
     llm = make_model()  # AGENT_BASE_URL picks a chat API; otherwise the local GGUF
     # Planning lengthens weak-model runs, so the bot raises the turn budgets with it, as the REPL does.

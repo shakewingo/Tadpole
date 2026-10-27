@@ -27,8 +27,8 @@ python -m agent_from_scratch.evals COMMAND --output outputs/NEW_NAME [options]
 
 | I want to know… | Command | Needs | Time |
 |---|---|---|---|
-| Do the units still work? | `python -m unittest discover -s agent_from_scratch/tests -q` | nothing | under a minute |
-| Do the task generator and verifier work? | `dataset --output DIR --check`: builds every task and runs a scripted correct solution and two cheats through the real agent loop | nothing | about a minute |
+| Do the units still work? | `python -m unittest discover -s agent_from_scratch/tests -q` | runtime dependencies; training tests also need `requirements-train.txt`; no model | — |
+| Do the task generator and verifier work? | `dataset --output DIR --check`: builds train/test tasks and runs a scripted correct solution and two cheats through the real agent loop | runtime dependencies; no model | about a minute |
 | Did my change break what the agent could do? | `bench --split val` | a model | about 12 min on a 16 GB Mac with a local Qwen3-4B GGUF |
 | How reliable is a model across samples? | `bench --seed N` per seed, then `aggregate DIR...`: pass@1, pass^k, pass@k, mixed-outcome tasks | a model | — |
 | How do two runs differ? | `compare A B`: paired outcomes, exact McNemar p, trajectory shape | nothing | instant |
@@ -126,11 +126,16 @@ frozen with.
 - **Calibration**: every leveled type at all five levels, seeds 100–105. It only chooses levels;
   it is never trained on or reported.
 
-Generate any of them, with the gates, without a model:
+Generate the train and test sets, with their gates, without a model:
 
 ```sh
 python -m agent_from_scratch.evals dataset --output outputs/NEW_DATA --check
 ```
+
+The dataset exporter currently selects only `train` and `test` (640 tasks in total).
+It does not export or gate the 144 validation or 80 hard-test tasks. Those generators are
+covered by the unit suite, and `bench --split val` / `bench --split hardtest` run them with a
+model. The generated manifest records all splits even though the exported workspaces do not.
 
 Each task's `workspace/` holds only its inputs; `task.json` beside it holds the private contract.
 Never send the contract or the scripted solution to a model. A scripted pass checks the
@@ -358,10 +363,25 @@ python -m agent_from_scratch.evals bfcl --bfcl-root gorilla/berkeley-function-ca
 
 ## Reproduce the results
 
-The numbers are in [docs/results.md](../docs/results.md). To reproduce one of them:
+The numbers are in [docs/results.md](../docs/results.md). The three adapters and their SFT data
+are on Hugging Face:
 
-1. **Setup** on a GPU pod (one A40 is enough to serve): a clean clone, the adapters under
-   `outputs/`, and `uv pip install vllm==0.30.0 peft -r agent_from_scratch/requirements.txt`.
+| Model in the results | Adapter | Directory as trained |
+|---|---|---|
+| SFT-1 | [Shakewin/tadpole-qwen3-4b-sft-1](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-1) | `sft-mix-r1/epoch-2` |
+| SFT-2 | [Shakewin/tadpole-qwen3-4b-sft-2](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-2) | `sft-mix-v3-r1/epoch-2` |
+| EI-3 | [Shakewin/tadpole-qwen3-4b-ei-3](https://huggingface.co/Shakewin/tadpole-qwen3-4b-ei-3) | `s10-m4` |
+
+[Shakewin/tadpole-sft-data](https://huggingface.co/datasets/Shakewin/tadpole-sft-data) holds the
+verified teacher and expert-iteration rows; its card rebuilds the converted When2Call and Toucan
+rows from their sources, and each training set exactly, checked against the hashes recorded at
+training time. The full measured run archives are not published, and the historical
+`scripts/stage*` drivers assume local outputs from earlier sessions: they are not a fresh-clone
+pipeline. The evaluation procedure is:
+
+1. **Setup** on a GPU pod (one A40 is enough to serve): a clean clone,
+   `uv pip install vllm==0.30.0 peft -r agent_from_scratch/requirements.txt`, and the adapters
+   under `outputs/`, e.g. `hf download Shakewin/tadpole-qwen3-4b-ei-3 --local-dir outputs/ei-3`.
 2. **Freeze the tasks and run the gates.** Every workspace is rebuilt from its seed, so there is
    no state to reset by hand:
 
@@ -388,13 +408,10 @@ The numbers are in [docs/results.md](../docs/results.md). To reproduce one of th
      --pair A:B [--subset NAME=TYPE,...] --output TABLE.md
    ```
 
-`scripts/stage11_session.sh` runs the whole final session (freeze, test, hard test, external).
+   Runs are paired by the seed each run's `metadata.json` records, in any order; the report
+   refuses an arm that repeats a seed, or a pair run with different seeds.
 
-| Model in the results | Adapter directory as trained |
-|---|---|
-| SFT-1 | `sft-mix-r1/epoch-2` |
-| SFT-2 | `sft-mix-v3-r1/epoch-2` |
-| EI-3 | `s10-m4` |
+`scripts/stage11_session.sh` runs the whole final session (freeze, test, hard test, external).
 
 ## When you change the agent
 

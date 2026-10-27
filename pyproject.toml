@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tadpole"
+version = "0.1.0"
+description = "An LLM agent built from scratch and post-trained one stage at a time: tools, context management, a benchmark, SFT, expert iteration and a GRPO pilot."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "shakewingo" }]
+keywords = ["agent", "llm", "tool-use", "sft", "grpo", "lora", "qwen3", "telegram-bot"]
+# The requirements files stay the single source: the GPU pod installs them directly.
+dynamic = ["dependencies", "optional-dependencies"]
+
+[project.urls]
+Repository = "https://github.com/shakewingo/Tadpole"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["agent_from_scratch/requirements.txt"] }
+optional-dependencies.train = { file = ["agent_from_scratch/requirements-train.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["agent_from_scratch*"]
+exclude = [
+    "agent_from_scratch.tests*", "agent_from_scratch.examples*", "agent_from_scratch.docs*",
+    "agent_from_scratch.scripts*", "agent_from_scratch.deploy*", "agent_from_scratch.prompts*",
+]
+
+[tool.setuptools.package-data]
+agent_from_scratch = ["prompts/*", "evals/bench/*.json", "tools/THIRD_PARTY.md"]

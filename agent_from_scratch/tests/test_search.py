@@ -34,6 +34,14 @@ class SearchTests(unittest.TestCase):
         limited = tool.invoke({"query": "port", "case_sensitive": False, "max_matches": 1})
         self.assertEqual((len(limited.output["matches"]), limited.output["truncated"]), (1, True))
         self.assertEqual(tool.invoke({"query": "("}).error_code, "invalid_arguments")
+        self.assertNotIn("partially_searched", found.output)
+
+    def test_grep_reads_a_large_file_only_up_to_the_cap_and_says_so(self):
+        (self.root / "big.log").write_text("x" * 32 + "\nneedle\n")
+        tool = GrepTextTool(self.root, max_file_bytes=20)  # the other files fit
+        output = tool.invoke({"query": "needle"}).output
+        self.assertEqual((output["matches"], output["truncated"]), ([], False))
+        self.assertEqual(output["partially_searched"], ["big.log"])
 
     def test_workspace_confinement_and_registration(self):
         tool = GrepTextTool(self.root / "sub", restrict_to_workspace=True)

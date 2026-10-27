@@ -1,5 +1,5 @@
 """Stage 11's result tables (the `report` command): pass@1 by arm and subset, paired
-comparisons, bootstrap intervals. (Not `results.py`: the repository ignores `*result*` files.)
+comparisons, bootstrap intervals.
 
 Usage: python -m agent_from_scratch.evals report --arm NAME=RUN,RUN,RUN [--arm ...]
            [--subset NAME=SKELETON,SKELETON ...] [--pair A:B ...] [--output FILE.md]
@@ -21,7 +21,15 @@ from .trajectory import compare
 
 
 def load(paths: list[Path]) -> list[list[dict]]:
-    return [json.loads((path / "results.json").read_text(encoding="utf-8")) for path in paths]
+    """One bench run per path, in the order of the seed its metadata.json records."""
+    runs: dict[int, list[dict]] = {}
+    for path in paths:
+        seed = json.loads((path / "metadata.json").read_text(encoding="utf-8"))["seed"]
+        if seed in runs:
+            raise ValueError(f"Seed {seed} is given twice in one arm: {path}.")
+        records = json.loads((path / "results.json").read_text(encoding="utf-8"))
+        runs[seed] = [{**r, "seed": seed} for r in records]
+    return [runs[seed] for seed in sorted(runs)]
 
 
 def keep(runs: list[list[dict]], skeletons: set[str] | None) -> list[list[dict]]:
@@ -37,11 +45,13 @@ def pass_at_1(runs: list[list[dict]]) -> float:
 
 
 def paired(a: list[list[dict]], b: list[list[dict]]) -> dict:
-    """B against A, matched by task and seed (seed i of A with seed i of B)."""
+    """B against A, matched by task and seed (the seed `load` reads; list position without one)."""
     if len(a) != len(b):
         raise ValueError(f"Seed counts differ: {len(a)} and {len(b)}.")
-    first = [{**r, "id": f"{r['id']}#{seed}"} for seed, run in enumerate(a) for r in run]
-    second = [{**r, "id": f"{r['id']}#{seed}"} for seed, run in enumerate(b) for r in run]
+    first, second = ([{**r, "id": f"{r['id']}#{r.get('seed', index)}"}
+                      for index, run in enumerate(runs) for r in run] for runs in (a, b))
+    if {r.get("seed") for r in first} != {r.get("seed") for r in second}:
+        raise ValueError("The two arms were run with different seeds.")
     result = compare(first, second)
     return {"pairs": result["tasks"], "wins": result["only_b"], "losses": result["only_a"],
             "both": result["both"], "neither": result["neither"], "mcnemar_p": result["mcnemar_p"]}

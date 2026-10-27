@@ -470,9 +470,10 @@ class ChatAPIClient:
         self.temperature, self.max_tokens = temperature, max_tokens
         self.retries, self.backoff = retries, backoff
         self.tokens_per_char = self.START_TOKENS_PER_CHAR
-        # First tool-call ID of a turn -> the reasoning that came with it. DeepSeek's thinking
-        # mode asks for it back while tools are in play; the harness does not keep it.
-        self._reasoning: dict[str, str] = {}
+        # First tool call of a turn, with the reasoning that came with it. DeepSeek's thinking
+        # mode asks for it back while tools are in play; the harness does not keep it. Matched by
+        # the call's ID when a request is built: the agent renames a repeated ID after generate.
+        self._reasoning: list[tuple[ToolCall, str]] = []
 
     def _request(self, body: dict) -> dict:
         import httpx
@@ -493,6 +494,7 @@ class ChatAPIClient:
 
     def _messages(self, messages: list) -> list[dict]:
         """The harness's messages with only the fields the API defines."""
+        reasoning_by_id = {call.call_id: reasoning for call, reasoning in self._reasoning}
         converted = []
         for message in messages:
             entry = {"role": message["role"], "content": message.get("content") or ""}
@@ -500,7 +502,7 @@ class ChatAPIClient:
                 entry["tool_call_id"] = message["tool_call_id"]
             elif message["role"] == "assistant" and message.get("tool_calls"):
                 entry["tool_calls"] = message["tool_calls"]
-                reasoning = self._reasoning.get(message["tool_calls"][0]["id"])
+                reasoning = reasoning_by_id.get(message["tool_calls"][0]["id"])
                 if reasoning is not None:
                     entry["reasoning_content"] = reasoning
             converted.append(entry)
@@ -541,7 +543,7 @@ class ChatAPIClient:
             self.tokens_per_char = max(self.tokens_per_char, reported / self._characters(messages, tools))
         reasoning = raw["choices"][0]["message"].get("reasoning_content")
         if parsed.tool_calls and isinstance(reasoning, str):
-            self._reasoning[parsed.tool_calls[0].call_id] = reasoning
+            self._reasoning.append((parsed.tool_calls[0], reasoning))
         parsed.raw_response = raw
         return parsed
 

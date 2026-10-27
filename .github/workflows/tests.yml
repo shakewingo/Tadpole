@@ -1,0 +1,44 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+env:
+  LOGURU_LEVEL: WARNING  # the agent logs every tool call at DEBUG; keep failures readable
+
+jobs:
+  unit:
+    name: unit tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: agent_from_scratch/requirements*.txt
+      - run: pip install -e .
+      # The training and llama.cpp template tests skip themselves here; the job below runs them.
+      - run: python -m unittest discover -s agent_from_scratch/tests -q
+
+  training:
+    name: unit tests with the training libraries and llama.cpp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: agent_from_scratch/requirements*.txt
+      # The CPU build keeps the job small; the tests train tiny models on the CPU.
+      - run: pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[train]"
+      # requirements.txt installs llama-cpp-python on macOS only; the chat-template tests need it.
+      - run: pip install "llama-cpp-python>=0.3,<0.4" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+      - run: python -m unittest discover -s agent_from_scratch/tests -q

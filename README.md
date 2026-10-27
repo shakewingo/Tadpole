@@ -1,15 +1,20 @@
 # Tadpole
 
+[![tests](https://github.com/shakewingo/Tadpole/actions/workflows/tests.yml/badge.svg)](https://github.com/shakewingo/Tadpole/actions/workflows/tests.yml)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/shakewingo/Tadpole/blob/main/agent_from_scratch/examples/walkthrough.ipynb)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-adapters%20and%20data-ffd21e)](https://huggingface.co/Shakewin)
+
 *An LLM agent built from scratch, and grown one stage at a time.*
 
 A tool-using agent in about 3,500 lines of plain Python that you can run around the clock from
 Telegram, and a stage-by-stage record of how it was built, measured and post-trained, from the
-first agent loop to SFT, expert iteration and a RL (e.g. GRPO) pilot on a small (e.g 4B) model.
+first agent loop to SFT, expert iteration and a GRPO pilot on a small (4B) model.
 
 It is two things:
 
-- **An agent you can use.** It reads, writes and edits files in granted workspace, runs shell commands, searches and
-  fetches the web, keeps sessions and compacts long conversations. It runs on a **local
+- **An agent you can use.** It reads, writes and edits files in a granted workspace, runs shell
+  commands, searches and fetches the web, keeps sessions and compacts long conversations. It runs on a **local
   small model** or on **any OpenAI-compatible model** (OpenAI, DeepSeek, OpenRouter, Ollama, LM
   Studio, vLLM), in a terminal or as a Telegram bot.
 - **A from-scratch tutorial.** Built without LangChain, LlamaIndex or any other agent framework:
@@ -25,7 +30,8 @@ It is two things:
 | **SFT-2**: SFT-1's data plus multi-turn demonstrations | 0.738 | **0.492** | 0.325 |
 | **EI-3**: SFT-2 plus 3 rounds of expert iteration | *0.745* | *0.471* | **0.395** |
 
-Details, the GRPO pilot and the limitations: [Post-training results](#post-training-results).
+Details, the GRPO pilot and the limitations: [Post-training results](#post-training-results). The
+three adapters and their training data are [on Hugging Face](#download-the-adapters-and-data).
 
 ## Use the agent
 
@@ -37,7 +43,7 @@ Python 3.11 or later.
 git clone https://github.com/shakewingo/Tadpole.git
 cd Tadpole
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r agent_from_scratch/requirements.txt
+pip install -e .
 ```
 
 Run every command below from the repository root with the venv active.
@@ -102,8 +108,9 @@ python -m agent_from_scratch.agent
 
 > [!WARNING]
 > The agent runs shell commands and edits files with your user's permissions. The bot answers
-> only `TELEGRAM_ALLOWED_USER_ID` and ignores everyone else. Keep the env file private
-> : anyone with the token controls the bot. Run it under an account or on a machine you are prepared to let it change.
+> only `TELEGRAM_ALLOWED_USER_ID` and ignores everyone else. Keep the env file private: anyone
+> with the token controls the bot. Run it under an account or on a machine you are prepared to
+> let it change.
 
 Commands, in Telegram and in the terminal:
 
@@ -116,7 +123,8 @@ Commands, in Telegram and in the terminal:
 
 ### Keep it running 24/7
 
-The bot is one long-running process; It needs an always-on machine: a Mac mini or desktop that does not sleep, a home server, or a small cloud VM with an API model (a 1 GB VM is enough).
+The bot is one long-running process, so it needs an always-on machine: a Mac mini or desktop
+that does not sleep, a home server, or a small cloud VM with an API model (a 1 GB VM is enough).
 
 **Linux (systemd).** Save as `~/.config/systemd/user/tadpole-bot.service`, with your path:
 
@@ -146,8 +154,8 @@ journalctl --user -u tadpole-bot -f   # logs
 PLIST=~/Library/LaunchAgents/com.tadpole.telegram-bot.plist
 cp agent_from_scratch/deploy/com.tadpole.telegram-bot.plist "$PLIST"
 sed -i '' "s|/REPLACE/WITH/REPO/PATH|$PWD|g" "$PLIST"
-mkdir -p agent_from_scratch/outputs && launchctl load "$PLIST"
-tail -f agent_from_scratch/outputs/telegram_bot.log
+mkdir -p outputs && launchctl load "$PLIST"
+tail -f outputs/telegram_bot.log
 ```
 
 `launchctl unload "$PLIST"` stops it; unload and load again after changing code. In System
@@ -157,7 +165,7 @@ Settings, turn on "Prevent automatic sleeping when the display is off".
 
 ## Learn how it was built
 
-Every mechanism was added one stage at a time, with a deliberate failure, focused tests (586 of
+Every mechanism was added one stage at a time, with a deliberate failure, focused tests (596 of
 them, none needing a model) and evidence from real model runs.
 
 | Stage | What you build | Code | Read and run |
@@ -229,6 +237,21 @@ claim about general agent ability. Base and SFT-1 ran on test in an earlier serv
 SFT-2 and EI-3. When2Call scores are in-distribution for every model trained on public data.
 Full tables, paired tests and intervals: [docs/results.md](agent_from_scratch/docs/results.md).
 
+### Download the adapters and data
+
+| | On Hugging Face |
+|---|---|
+| SFT-1 adapter | [Shakewin/tadpole-qwen3-4b-sft-1](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-1) |
+| SFT-2 adapter | [Shakewin/tadpole-qwen3-4b-sft-2](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-2) |
+| EI-3 adapter | [Shakewin/tadpole-qwen3-4b-ei-3](https://huggingface.co/Shakewin/tadpole-qwen3-4b-ei-3) |
+| SFT data | [Shakewin/tadpole-sft-data](https://huggingface.co/datasets/Shakewin/tadpole-sft-data) |
+
+Each adapter is a LoRA for Qwen3-4B-Instruct-2507, trained on prompts rendered by this repository's
+chat template; its card shows how to serve it with vLLM and run it in the benchmark. The dataset
+holds the verified teacher and expert-iteration rows. The converted When2Call and Toucan rows are
+not re-hosted: its card rebuilds them from their sources, and each training set exactly, checked
+against the hashes recorded at training time.
+
 ## Repository layout
 
 ```
@@ -263,11 +286,21 @@ Details: [the build log](agent_from_scratch/docs/STAGE.md#what-comes-next).
 ## Acknowledgements
 
 The tool implementations adapt parts of [nanobot](https://github.com/HKUDS/nanobot)
-(see `tools/THIRD_PARTY.md`). Thanks to the authors of
+(see [the attribution and license](agent_from_scratch/tools/THIRD_PARTY.md)). Thanks to the authors of
 [Qwen3](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507),
-[When2Call](https://huggingface.co/datasets/nvidia/When2Call), Toucan and
+[When2Call](https://huggingface.co/datasets/nvidia/When2Call),
+[Toucan](https://huggingface.co/datasets/Agent-Ark/Toucan-1.5M) and
 [BFCL](https://github.com/ShishirPatil/gorilla).
 
 ## License
 
-TBD.
+Tadpole's original code and documentation are licensed under the [MIT License](LICENSE).
+Copyright (c) 2026 shakewingo.
+
+Third-party material retains its original license: the adapted nanobot tools carry their
+MIT notice, and the Qwen-derived chat template is covered by Apache-2.0. See
+[Third-party notices](THIRD_PARTY_NOTICES.md) for attribution, license texts and the separate
+terms for model weights and external datasets.
+
+On Hugging Face, the adapters are released under Apache-2.0, like their base model, and the SFT
+data under MIT; each card lists its sources and their licenses.

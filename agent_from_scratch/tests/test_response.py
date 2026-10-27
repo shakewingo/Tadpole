@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 import json
 import unittest
+from importlib.util import find_spec
 from copy import deepcopy
 
 from unittest.mock import Mock, patch
@@ -10,6 +11,9 @@ from agent_from_scratch.llm import LLM, LLMResponse, ResponseType, ResponseError
 from agent_from_scratch.tools.base import ToolCall
 from agent_from_scratch.config import CHAT_TEMPLATE_PATH
 from agent_from_scratch.llm import install_qwen_template
+
+# llama-cpp-python is installed on macOS only (requirements.txt); these tests use its chat formatter.
+needs_llama_cpp = unittest.skipUnless(find_spec("llama_cpp"), "llama-cpp-python is not installed")
 
 if TYPE_CHECKING:
     from llama_cpp import ChatCompletionRequestMessage
@@ -253,6 +257,7 @@ class GenerateTests(unittest.TestCase):
         model.create_completion.side_effect = complete
         return llm, model
 
+    @needs_llama_cpp
     def test_measurement_matches_generation_handler_with_schemas_and_tool_results(self):
         from agent_from_scratch.tools.register import default_registry
         base: list[ChatCompletionRequestMessage] = [{"role": "system", "content": "System"}, {"role": "user", "content": "你好, calculate."}]
@@ -280,6 +285,7 @@ class GenerateTests(unittest.TestCase):
                 self.assertEqual(measured["remaining_tokens"], 8000 - measured["prompt_tokens"] - 32)
                 self.assertEqual(messages, original)
 
+    @needs_llama_cpp
     def test_measurement_records_negative_room_without_enforcing_a_limit(self):
         llm, backend = self.measured_model()
         llm.n_ctx = 16
@@ -288,6 +294,7 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(measured["window_tokens"], 16)
         backend.create_completion.assert_not_called()
 
+    @needs_llama_cpp
     def test_unavailable_formatter_and_unbounded_output_are_not_guessed(self):
         llm, backend = self.measured_model()
         llm.max_tokens = 0
@@ -308,6 +315,7 @@ class GenerateTests(unittest.TestCase):
                 self.assertIsNone(measured["remaining_tokens"])
                 backend.tokenize.assert_not_called()
 
+    @needs_llama_cpp
     def test_window_uses_effective_backend_size(self):
         with patch("llama_cpp.Llama") as backend:
             backend.return_value.n_ctx.return_value = 4096
@@ -317,6 +325,7 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(measured["window_tokens"], 4096)
         self.assertEqual(measured["count_method"], "unavailable")
 
+    @needs_llama_cpp
     def test_template_uses_public_tokenizer_and_rejects_wrong_end_token(self):
         model = Mock()
         model.metadata = {"general.architecture": "qwen2"}
@@ -332,6 +341,7 @@ class GenerateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "end token"):
             install_qwen_template(model, CHAT_TEMPLATE_PATH)
 
+    @needs_llama_cpp
     def test_template_renders_arguments_once_without_changing_values(self):
         from llama_cpp.llama_chat_format import Jinja2ChatFormatter
         from agent_from_scratch.tools.register import default_registry
@@ -360,6 +370,7 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(result.finish_reason, "stop")
         self.assertEqual(result.to_message(), {"role": "assistant", "content": "Done"})
 
+    @needs_llama_cpp
     def test_template_keeps_chat_markers_in_tool_data_as_json_data(self):
         from llama_cpp.llama_chat_format import Jinja2ChatFormatter
         from agent_from_scratch.tools.register import default_registry
