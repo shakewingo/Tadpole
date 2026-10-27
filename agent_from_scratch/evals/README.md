@@ -38,8 +38,9 @@ python -m agent_from_scratch.evals COMMAND --output outputs/NEW_NAME [options]
 | How do I build the results tables? | `report --arm NAME=RUN,RUN,RUN ...` | nothing | seconds |
 
 `bench` runs one model on one split: `--backend llama_cpp` (default, a local GGUF, for pipeline
-checks), `--backend vllm --base-url URL [--adapter NAME]` (the measured protocol), or
-`--backend teacher` (an API model, train split only). `--tasks a,b` runs a subset.
+checks; `--lora-path FILE` adds an adapter in llama.cpp's format), `--backend vllm --base-url URL
+[--adapter NAME]` (the measured protocol), or `--backend teacher` (an API model, train split
+only). `--tasks a,b` runs a subset.
 
 ## Datasets
 

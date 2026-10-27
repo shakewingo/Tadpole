@@ -7,37 +7,26 @@
 
 *An LLM agent built from scratch, and grown one stage at a time.*
 
-A tool-using agent in about 3,500 lines of plain Python that you can run around the clock from
-Telegram, and a stage-by-stage record of how it was built, measured and post-trained, from the
-first agent loop to SFT, expert iteration and a GRPO pilot on a small (4B) model.
+<p align="center">
+  <img src="agent_from_scratch/docs/telegram.gif" width="360" alt="Tadpole in Telegram: it introduces itself, checks the weather in Beijing, summarizes the repo's latest commit, then sums up the chat in one sentence">
+</p>
 
-It is two things:
+A tool-using agent in about 3,500 lines of plain Python, with no agent framework, that you can
+run around the clock from Telegram, and a stage-by-stage record of how it was built, measured
+and post-trained.
 
-- **An agent you can use.** It reads, writes and edits files in a granted workspace, runs shell
-  commands, searches and fetches the web, keeps sessions and compacts long conversations. It runs on a **local
-  small model** or on **any OpenAI-compatible model** (OpenAI, DeepSeek, OpenRouter, Ollama, LM
-  Studio, vLLM), in a terminal or as a Telegram bot.
-- **A from-scratch tutorial.** Built without LangChain, LlamaIndex or any other agent framework:
-  the loop, tools, context management and training code are plain Python you can read end to
-  end. Each stage adds one mechanism with tests and measured evidence: the loop, sessions,
-  tools, context management, a benchmark with an independent verifier, then post-training the
-  model behind it.
-
-| Post-training Qwen3-4B-Instruct-2507, pass@1 on task types never trained on | Test (140) | Hard test (80) | BFCL multi-turn |
-|---|---:|---:|---:|
-| Base | 0.419 | 0.275 | *0.360* |
-| **SFT-1**: SFT on verified teacher trajectories and public tool-use data | **0.774** | 0.429 | 0.285 |
-| **SFT-2**: SFT-1's data plus multi-turn demonstrations | 0.738 | **0.492** | 0.325 |
-| **EI-3**: SFT-2 plus 3 rounds of expert iteration | *0.745* | *0.471* | **0.395** |
-
-Details, the GRPO pilot and the limitations: [Post-training results](#post-training-results). The
-three adapters and their training data are [on Hugging Face](#download-the-adapters-and-data).
+- **An agent you can use.** Files, shell, web search and fetch, sessions and compaction, on a
+  local 4B model or any OpenAI-compatible API, in a terminal or as a Telegram bot.
+- **A from-scratch tutorial.** Each stage adds one mechanism with tests and measured evidence,
+  from the first agent loop to SFT, expert iteration and a GRPO pilot. Post-training lifts
+  Qwen3-4B from **0.419 to 0.774** pass@1 on task types it never trained on
+  ([results](#post-training-results)).
 
 ## Use the agent
 
 ### Install
 
-Python 3.11 or later.
+Python 3.11 or later. Run every command from the repository root with the venv active.
 
 ```sh
 git clone https://github.com/shakewingo/Tadpole.git
@@ -46,41 +35,37 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-Run every command below from the repository root with the venv active.
-
 ### Choose a model
 
-**Any OpenAI-compatible model.** Set three variables:
+Pick one row and set its variables: `export` them for the terminal, or uncomment the matching
+block in the [bot's env file](agent_from_scratch/deploy/telegram-bot.env.example).
+
+| Model | Where it runs | Variables |
+|---|---|---|
+| **Any OpenAI-compatible API**: OpenAI, DeepSeek, OpenRouter, LM Studio, vLLM | the provider | `AGENT_BASE_URL=https://api.deepseek.com`<br>`AGENT_MODEL=deepseek-flash`<br>`AGENT_API_KEY=sk-...`<br>`AGENT_N_CTX=` the model's window (optional, default 32768) |
+| **A local model with Ollama**: any model with tool calling | a local Ollama server, any OS | `AGENT_BASE_URL=http://localhost:11434/v1`<br>`AGENT_MODEL=hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M`<br>`AGENT_N_CTX=32768` |
+| **A local GGUF with llama.cpp**: Qwen2 or Qwen3 only, as the agent uses Qwen's chat template | in-process, macOS only (Qwen3-4B Q4_K_M: about 2.5 GB; 16 GB of memory is plenty) | none: leave `AGENT_BASE_URL` unset; `AGENT_MODEL_PATH=` another GGUF (default: Qwen3-4B Q4_K_M) |
+| **Post-trained Qwen3-4B**: a Tadpole [adapter](#download-the-adapters-and-data) | in-process with llama.cpp, macOS only | `AGENT_MODEL_PATH=models/Qwen3-4B-Instruct-2507-Q8_0.gguf`<br>`AGENT_LORA_PATH=models/ei-3-lora-f16.gguf` (or sft-1, sft-2)<br>`AGENT_PLANNING=0` (the adapters were trained without the plan tool) |
+
+The local rows need the model first. With Qwen3-4B, the model this project trains:
 
 ```sh
-export AGENT_BASE_URL=https://api.deepseek.com   # the API root; often ends in /v1
-export AGENT_MODEL=deepseek-flash                # the provider's model ID
-export AGENT_API_KEY=sk-...                      # not needed for a local server
-export AGENT_N_CTX=32768                         # optional: the model's context window
-```
-
-**Qwen3-4B on your own machine.** Either serve it with Ollama (any OS) and point the variables
-above at it:
-
-```sh
+# Ollama: pull, then serve with a window large enough for the agent
 ollama pull hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M
-OLLAMA_CONTEXT_LENGTH=32768 ollama serve   # Ollama's default window is too small for the agent
-export AGENT_BASE_URL=http://localhost:11434/v1
-export AGENT_MODEL=hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M
-export AGENT_N_CTX=32768
-```
+OLLAMA_CONTEXT_LENGTH=32768 ollama serve
 
-or, on a Mac, load the GGUF in-process with llama.cpp (about 2.5 GB, Metal-accelerated; 16 GB of
-memory is plenty) and leave `AGENT_BASE_URL` unset:
-
-```sh
+# llama.cpp: the default AGENT_MODEL_PATH
 hf download unsloth/Qwen3-4B-Instruct-2507-GGUF Qwen3-4B-Instruct-2507-Q4_K_M.gguf --local-dir models
+
+# Post-trained: the Q8_0 base the adapters were measured on, and an adapter
+hf download unsloth/Qwen3-4B-Instruct-2507-GGUF Qwen3-4B-Instruct-2507-Q8_0.gguf --local-dir models
+hf download Shakewin/tadpole-qwen3-4b-ei-3 ei-3-lora-f16.gguf --local-dir models
 ```
 
-That is the default location; set `AGENT_MODEL_PATH` to use another GGUF file.
+LOCAL_RESULTS_PLACEHOLDER
 
-A 4B model is a capable tool user on short tasks and a weak planner on long ones. For daily use,
-a larger API model gives better answers; the 4B is what this project trains.
+A 4B model is a capable tool user on short tasks and a weak planner on long ones; for daily use,
+a larger API model gives better answers.
 
 ### Chat in the terminal
 
@@ -90,83 +75,48 @@ python -m agent_from_scratch.agent
 
 ### Chat from Telegram
 
-1. In Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot`, and copy the
-   **bot token**. Then message [@userinfobot](https://t.me/userinfobot) and copy your numeric
-   **user ID**.
-2. Put both in the bot's env file, with your model variables if you use an API:
+1. Message [@BotFather](https://t.me/BotFather) with `/newbot` for a **bot token**, and
+   [@userinfobot](https://t.me/userinfobot) for your numeric **user ID**.
+2. Put both, and your `AGENT_*` variables if you use an API, in the env file:
 
    ```sh
    cp agent_from_scratch/deploy/telegram-bot.env.example agent_from_scratch/deploy/telegram-bot.env
-   # edit it: TELEGRAM_BOT_TOKEN=...  TELEGRAM_ALLOWED_USER_ID=...  (and AGENT_* if used)
    ```
 
-3. Start it, and message your bot:
-
-   ```sh
-   sh agent_from_scratch/scripts/run_telegram_bot.sh
-   ```
+3. Start it, and message your bot: `sh agent_from_scratch/scripts/run_telegram_bot.sh`
 
 > [!WARNING]
-> The agent runs shell commands and edits files with your user's permissions. The bot answers
-> only `TELEGRAM_ALLOWED_USER_ID` and ignores everyone else. Keep the env file private: anyone
-> with the token controls the bot. Run it under an account or on a machine you are prepared to
-> let it change.
+> The agent runs shell commands and edits files with your user's permissions. It answers only
+> `TELEGRAM_ALLOWED_USER_ID`, but anyone with the token controls the bot: keep the env file private.
 
-Commands, in Telegram and in the terminal:
-
-| Command | What it does |
-|---|---|
-| `/new` | start a fresh session |
-| `/reset` | clear the current session's history |
-| `/session <id>` | switch to a named session |
-| `/compact` | summarize the history before your next message |
+In Telegram and the terminal: `/new` starts a session, `/reset` clears it, `/session <id>`
+switches to a named one, and `/compact` summarizes the history.
 
 ### Keep it running 24/7
 
-The bot is one long-running process, so it needs an always-on machine: a Mac mini or desktop
-that does not sleep, a home server, or a small cloud VM with an API model (a 1 GB VM is enough).
-
-**Linux (systemd).** Save as `~/.config/systemd/user/tadpole-bot.service`, with your path:
-
-```ini
-[Unit]
-Description=Tadpole Telegram bot
-After=network-online.target
-
-[Service]
-ExecStart=/bin/sh /path/to/Tadpole/agent_from_scratch/scripts/run_telegram_bot.sh
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
+Use an always-on machine: a Mac that does not sleep, a home server, or a small cloud VM with an
+API model (1 GB is enough).
 
 ```sh
-systemctl --user enable --now tadpole-bot
-sudo loginctl enable-linger "$USER"     # keep it running after you log out
-journalctl --user -u tadpole-bot -f   # logs
-```
+# Linux (systemd)
+UNIT=~/.config/systemd/user/tadpole-bot.service
+mkdir -p "$(dirname "$UNIT")" && cp agent_from_scratch/deploy/tadpole-bot.service "$UNIT"
+sed -i "s|/REPLACE/WITH/REPO/PATH|$PWD|g" "$UNIT"
+systemctl --user enable --now tadpole-bot && sudo loginctl enable-linger "$USER"
 
-**macOS (launchd).**
-
-```sh
+# macOS (launchd); also turn on "Prevent automatic sleeping when the display is off"
 PLIST=~/Library/LaunchAgents/com.tadpole.telegram-bot.plist
 cp agent_from_scratch/deploy/com.tadpole.telegram-bot.plist "$PLIST"
 sed -i '' "s|/REPLACE/WITH/REPO/PATH|$PWD|g" "$PLIST"
 mkdir -p outputs && launchctl load "$PLIST"
-tail -f outputs/telegram_bot.log
 ```
 
-`launchctl unload "$PLIST"` stops it; unload and load again after changing code. In System
-Settings, turn on "Prevent automatic sleeping when the display is off".
-
-**Anywhere else**, `tmux` or `nohup` keeps it running until the machine restarts.
+Logs: `journalctl --user -u tadpole-bot -f` on Linux, `outputs/telegram_bot.log` on macOS.
 
 ## Learn how it was built
 
-Every mechanism was added one stage at a time, with a deliberate failure, focused tests (596 of
-them, none needing a model) and evidence from real model runs.
+Each stage adds one mechanism, with a deliberate failure, focused tests (601, none needing a
+model) and evidence from real model runs.
 
 | Stage | What you build | Code | Read and run |
 |---|---|---|---|
@@ -179,26 +129,17 @@ them, none needing a model) and evidence from real model runs.
 | 10 | Expert iteration and a GRPO pilot | `evals/sft/grpo.py` | notebook §7, [EI and GRPO](agent_from_scratch/evals/README.md#expert-iteration-and-grpo) |
 | 11 | One final comparison on held-out tests | `evals/report.py` | [results](agent_from_scratch/docs/results.md) |
 
-Where to start:
-
-- **[The walkthrough notebook](agent_from_scratch/examples/walkthrough.ipynb)**: one section per
-  stage, with outputs saved so it reads on GitHub. Sections 1–3 and 6 run live in minutes with
-  an API model; 4, 5 and 7 need no model. Section 6 shows a teacher's run becoming SFT data, and
-  section 7 expert iteration and GRPO on the 4B student's own recorded samples.
-- **[The build log](agent_from_scratch/docs/STAGE.md)**: each stage's goal, what was built,
-  what the evidence showed, and where the build departed from the plan.
-- **[Evaluating and post-training](agent_from_scratch/evals/README.md)**: the datasets, how to
-  add a task type, export SFT data, train an adapter, and run expert iteration and GRPO.
-
-Training needs a CUDA GPU (24 GB or more). We rented one per session on RunPod; the whole
-post-training line cost about \$140.
+Start with **[the walkthrough notebook](agent_from_scratch/examples/walkthrough.ipynb)** (outputs
+saved, so it reads on GitHub), then **[the build log](agent_from_scratch/docs/STAGE.md)** for
+each stage's evidence and **[evaluating and post-training](agent_from_scratch/evals/README.md)**
+to run it yourself. Training needs a 24 GB CUDA GPU; the whole post-training line cost about
+\$140 on RunPod.
 
 ## Post-training results
 
-The agent's code, prompts and tools were frozen; only the model's weights changed. Every choice
-was made on val, and each final model was run once on two held-out sets: a test set of 140
-single-turn tasks and a hard test of 80 leveled tasks, whose types no training set contains,
-three samples per task.
+The agent's code, prompts and tools were frozen; only the weights changed. Every choice was made
+on val, and each final model ran once on two held-out sets whose task types no training set
+contains: 140 single-turn tasks (test) and 80 leveled tasks (hard test), three samples each.
 
 | | Base | SFT-1 | SFT-2 | EI-3 |
 |---|---:|---:|---:|---:|
@@ -208,34 +149,19 @@ three samples per task.
 | Hard test pass^3 | 0.125 | 0.250 | *0.325* | **0.338** |
 | BFCL multi-turn† | *0.360* | 0.285 | 0.325 | **0.395** |
 
-**Bold** is the best model on a row, *italic* the second. SFT-1 is SFT on verified teacher
-trajectories for 320 single-turn tasks plus When2Call and Toucan rows; SFT-2 adds teacher
-trajectories for 100 more single-turn and multi-turn tasks; EI-3 is SFT-2 after three rounds of
-expert iteration. † A local adaptation of BFCL's multi-turn base category, not a leaderboard
-score.
+**Bold** is best, *italic* second. SFT-1: verified teacher trajectories plus When2Call and Toucan
+rows. SFT-2: plus multi-turn demonstrations. EI-3: SFT-2 after three rounds of expert iteration.
+† A local adaptation of BFCL's multi-turn base category, not a leaderboard score.
 
-**What we found**
+- **SFT on verified demonstrations gives the large gain**, and false "done" claims fall from 31
+  to 1 in 420 runs.
+- **The three post-trained models are level on held-out tasks** (0.648, 0.648, 0.645 over all
+  220); EI-3 is the most balanced, and beats SFT-2 on BFCL (p = 0.034).
+- **Val overstated expert iteration** (0.752 → 0.852), and **GRPO lost to it** at equal rollouts.
+  Neither learned a behaviour the model never produced.
 
-- **SFT on verified demonstrations gives the large gain**: from 0.419 to 0.774 on test, with false
-  "done" claims falling from 31 to 1 in 420 runs.
-- **Three post-training routes reach the same level on held-out tasks.** Over all 220 tasks,
-  SFT-1, SFT-2 and EI-3 score 0.648, 0.648 and 0.645; no difference between them is
-  distinguishable from zero.
-- **EI-3 is the most balanced model**: second on both held-out sets, the most reliable on the hard
-  test, and first on BFCL, where it beats its starting point SFT-2 (26 entries won, 12 lost,
-  p = 0.034). Public When2Call data had taught SFT-1 to ask for information it already had in
-  multi-turn conversations; multi-turn demonstrations and expert iteration recover that.
-- **Val overstated expert iteration.** It raised val from 0.752 to 0.852, but on held-out tasks
-  EI-3 is level with SFT-2: the best of several noisy val scores is biased upwards.
-- **GRPO lost to expert iteration** at every equal number of rollouts on val: few tasks per step
-  had mixed outcomes, and nothing anchored the model to its other skills.
-- **Neither method learned a behaviour the model never produced.** Outcome learning selects
-  among what the model already samples.
-
-**Limitations.** One training run per model. A small local benchmark (140 + 80 tasks), not a
-claim about general agent ability. Base and SFT-1 ran on test in an earlier serving session than
-SFT-2 and EI-3. When2Call scores are in-distribution for every model trained on public data.
-Full tables, paired tests and intervals: [docs/results.md](agent_from_scratch/docs/results.md).
+One training run per model, on a small local benchmark: not a claim about general agent ability.
+Full tables, paired tests and limitations: [docs/results.md](agent_from_scratch/docs/results.md).
 
 ### Download the adapters and data
 
@@ -246,47 +172,22 @@ Full tables, paired tests and intervals: [docs/results.md](agent_from_scratch/do
 | EI-3 adapter | [Shakewin/tadpole-qwen3-4b-ei-3](https://huggingface.co/Shakewin/tadpole-qwen3-4b-ei-3) |
 | SFT data | [Shakewin/tadpole-sft-data](https://huggingface.co/datasets/Shakewin/tadpole-sft-data) |
 
-Each adapter is a LoRA for Qwen3-4B-Instruct-2507, trained on prompts rendered by this repository's
-chat template; its card shows how to serve it with vLLM and run it in the benchmark. The dataset
-holds the verified teacher and expert-iteration rows. The converted When2Call and Toucan rows are
-not re-hosted: its card rebuilds them from their sources, and each training set exactly, checked
-against the hashes recorded at training time.
-
-## Repository layout
-
-```
-agent_from_scratch/
-  agent.py  llm.py  context.py  compact.py  session.py  trace.py   the agent
-  tools/        files, shell, web, search, calculator, plan
-  bots/         the Telegram bot
-  prompts/      system prompt, compaction prompt, chat template
-  evals/        benchmark, verifier, SFT, expert iteration, GRPO, external tests
-  examples/     the walkthrough notebook
-  docs/         the build log and the results
-  tests/        unit tests (no model needed)
-```
+Each card shows how to serve the adapter with vLLM, or rebuild every training set exactly.
 
 ## Roadmap
 
-Tadpole keeps growing, one measured stage at a time:
-
-- **Memory**: durable memory across sessions, with a bounded index and on-demand detail,
-  explicit remember, search and forget tools, and corrections that win over old facts;
-  measured as memory off against memory on.
-- **Skills and MCP**: a skill catalogue whose instructions load only when needed, and tools from
-  MCP servers behind the same registry.
-- **Background jobs and a sub-agent**: scheduled tasks for the always-on bot, and one read-only
-  child agent.
-- **A self-improving harness**: with the model fixed, let execution feedback improve the harness
-  itself, starting with reflective prompt search and moving to keep-or-revert search over
-  prompts and tools, scored on task types the search never saw.
+- **Memory** across sessions, with remember, search and forget tools.
+- **Skills and MCP** behind the same tool registry.
+- **Background jobs** for the always-on bot, and a read-only sub-agent.
+- **A self-improving harness**: with the model fixed, let execution feedback improve the prompts
+  and tools.
 
 Details: [the build log](agent_from_scratch/docs/STAGE.md#what-comes-next).
 
 ## Acknowledgements
 
 The tool implementations adapt parts of [nanobot](https://github.com/HKUDS/nanobot)
-(see [the attribution and license](agent_from_scratch/tools/THIRD_PARTY.md)). Thanks to the authors of
+([attribution](agent_from_scratch/tools/THIRD_PARTY.md)). Thanks to the authors of
 [Qwen3](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507),
 [When2Call](https://huggingface.co/datasets/nvidia/When2Call),
 [Toucan](https://huggingface.co/datasets/Agent-Ark/Toucan-1.5M) and
@@ -294,13 +195,6 @@ The tool implementations adapt parts of [nanobot](https://github.com/HKUDS/nanob
 
 ## License
 
-Tadpole's original code and documentation are licensed under the [MIT License](LICENSE).
-Copyright (c) 2026 shakewingo.
-
-Third-party material retains its original license: the adapted nanobot tools carry their
-MIT notice, and the Qwen-derived chat template is covered by Apache-2.0. See
-[Third-party notices](THIRD_PARTY_NOTICES.md) for attribution, license texts and the separate
-terms for model weights and external datasets.
-
-On Hugging Face, the adapters are released under Apache-2.0, like their base model, and the SFT
-data under MIT; each card lists its sources and their licenses.
+[MIT](LICENSE), Copyright (c) 2026 shakewingo. Third-party material keeps its own license (the
+nanobot tools MIT, the Qwen-derived chat template Apache-2.0), and the Hugging Face adapters are
+Apache-2.0, the SFT data MIT; see [Third-party notices](THIRD_PARTY_NOTICES.md).
