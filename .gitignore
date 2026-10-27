@@ -3,6 +3,9 @@
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
+build/
+dist/
+*.egg-info/
 models/
 
 # Everything the commands write: sessions, traces, logs, run evidence, adapters, downloaded data
