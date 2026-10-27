@@ -363,18 +363,25 @@ python -m agent_from_scratch.evals bfcl --bfcl-root gorilla/berkeley-function-ca
 
 ## Reproduce the results
 
-The numbers are in [docs/results.md](../docs/results.md). This release includes the code,
-task generators and selected illustrative run data, but does not include the trained SFT-1,
-SFT-2 or EI-3 adapters, the full training datasets, or the full measured run archives.
-There are currently no download links for those artifacts. The historical `scripts/stage*`
-drivers assume local outputs from earlier sessions; they are not a complete fresh-clone
-reproduction pipeline. You can use the commands above to train and evaluate new adapters,
-but reproducing the published checkpoints and tables requires the original artifacts.
+The numbers are in [docs/results.md](../docs/results.md). The three adapters and their SFT data
+are on Hugging Face:
 
-With those artifacts available, the evaluation procedure is:
+| Model in the results | Adapter | Directory as trained |
+|---|---|---|
+| SFT-1 | [Shakewin/tadpole-qwen3-4b-sft-1](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-1) | `sft-mix-r1/epoch-2` |
+| SFT-2 | [Shakewin/tadpole-qwen3-4b-sft-2](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-2) | `sft-mix-v3-r1/epoch-2` |
+| EI-3 | [Shakewin/tadpole-qwen3-4b-ei-3](https://huggingface.co/Shakewin/tadpole-qwen3-4b-ei-3) | `s10-m4` |
 
-1. **Setup** on a GPU pod (one A40 is enough to serve): a clean clone, the adapters under
-   `outputs/`, and `uv pip install vllm==0.30.0 peft -r agent_from_scratch/requirements.txt`.
+[Shakewin/tadpole-sft-data](https://huggingface.co/datasets/Shakewin/tadpole-sft-data) holds the
+verified teacher and expert-iteration rows; its card rebuilds the converted When2Call and Toucan
+rows from their sources, and each training set exactly, checked against the hashes recorded at
+training time. The full measured run archives are not published, and the historical
+`scripts/stage*` drivers assume local outputs from earlier sessions: they are not a fresh-clone
+pipeline. The evaluation procedure is:
+
+1. **Setup** on a GPU pod (one A40 is enough to serve): a clean clone,
+   `uv pip install vllm==0.30.0 peft -r agent_from_scratch/requirements.txt`, and the adapters
+   under `outputs/`, e.g. `hf download Shakewin/tadpole-qwen3-4b-ei-3 --local-dir outputs/ei-3`.
 2. **Freeze the tasks and run the gates.** Every workspace is rebuilt from its seed, so there is
    no state to reset by hand:
 
@@ -405,12 +412,6 @@ With those artifacts available, the evaluation procedure is:
    refuses an arm that repeats a seed, or a pair run with different seeds.
 
 `scripts/stage11_session.sh` runs the whole final session (freeze, test, hard test, external).
-
-| Model in the results | Adapter directory as trained |
-|---|---|
-| SFT-1 | `sft-mix-r1/epoch-2` |
-| SFT-2 | `sft-mix-v3-r1/epoch-2` |
-| EI-3 | `s10-m4` |
 
 ## When you change the agent
 

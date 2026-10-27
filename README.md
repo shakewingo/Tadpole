@@ -3,6 +3,7 @@
 [![tests](https://github.com/shakewingo/Tadpole/actions/workflows/tests.yml/badge.svg)](https://github.com/shakewingo/Tadpole/actions/workflows/tests.yml)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/shakewingo/Tadpole/blob/main/agent_from_scratch/examples/walkthrough.ipynb)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-adapters%20and%20data-ffd21e)](https://huggingface.co/Shakewin)
 
 *An LLM agent built from scratch, and grown one stage at a time.*
 
@@ -29,7 +30,8 @@ It is two things:
 | **SFT-2**: SFT-1's data plus multi-turn demonstrations | 0.738 | **0.492** | 0.325 |
 | **EI-3**: SFT-2 plus 3 rounds of expert iteration | *0.745* | *0.471* | **0.395** |
 
-Details, the GRPO pilot and the limitations: [Post-training results](#post-training-results).
+Details, the GRPO pilot and the limitations: [Post-training results](#post-training-results). The
+three adapters and their training data are [on Hugging Face](#download-the-adapters-and-data).
 
 ## Use the agent
 
@@ -235,6 +237,21 @@ claim about general agent ability. Base and SFT-1 ran on test in an earlier serv
 SFT-2 and EI-3. When2Call scores are in-distribution for every model trained on public data.
 Full tables, paired tests and intervals: [docs/results.md](agent_from_scratch/docs/results.md).
 
+### Download the adapters and data
+
+| | On Hugging Face |
+|---|---|
+| SFT-1 adapter | [Shakewin/tadpole-qwen3-4b-sft-1](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-1) |
+| SFT-2 adapter | [Shakewin/tadpole-qwen3-4b-sft-2](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-2) |
+| EI-3 adapter | [Shakewin/tadpole-qwen3-4b-ei-3](https://huggingface.co/Shakewin/tadpole-qwen3-4b-ei-3) |
+| SFT data | [Shakewin/tadpole-sft-data](https://huggingface.co/datasets/Shakewin/tadpole-sft-data) |
+
+Each adapter is a LoRA for Qwen3-4B-Instruct-2507, trained on prompts rendered by this repository's
+chat template; its card shows how to serve it with vLLM and run it in the benchmark. The dataset
+holds the verified teacher and expert-iteration rows. The converted When2Call and Toucan rows are
+not re-hosted: its card rebuilds them from their sources, and each training set exactly, checked
+against the hashes recorded at training time.
+
 ## Repository layout
 
 ```
@@ -284,3 +301,6 @@ Third-party material retains its original license: the adapted nanobot tools car
 MIT notice, and the Qwen-derived chat template is covered by Apache-2.0. See
 [Third-party notices](THIRD_PARTY_NOTICES.md) for attribution, license texts and the separate
 terms for model weights and external datasets.
+
+On Hugging Face, the adapters are released under Apache-2.0, like their base model, and the SFT
+data under MIT; each card lists its sources and their licenses.
