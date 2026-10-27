@@ -1,6 +1,7 @@
 from dataclasses import replace
 import json
 import unittest
+from importlib.util import find_spec
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -11,6 +12,9 @@ from agent_from_scratch.session import SessionStore
 from agent_from_scratch.tools.base import Tool, ToolInterrupted, ToolRegistry
 from agent_from_scratch.tools.files import ReadFileTool, WriteFileTool
 from agent_from_scratch.tools.shell import ShellTool
+
+# llama-cpp-python is installed on macOS only (requirements.txt); these tests use its chat formatter.
+needs_llama_cpp = unittest.skipUnless(find_spec("llama_cpp"), "llama-cpp-python is not installed")
 
 
 def block(name, **arguments):
@@ -60,6 +64,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(len({c["id"] for c in calls}), len(calls))
         return observations
 
+    @needs_llama_cpp
     def test_write_rename_read_batch_is_ordered_and_replayable(self):
         content = "# preserve me\nprint('hello')\n"
         batch = "Creating.\n" + block("write_file", path="test.py", content=content)

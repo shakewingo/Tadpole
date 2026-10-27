@@ -23,11 +23,11 @@ jobs:
           cache: pip
           cache-dependency-path: agent_from_scratch/requirements*.txt
       - run: pip install -e .
-      # The training tests skip themselves here; the job below runs them.
+      # The training and llama.cpp template tests skip themselves here; the job below runs them.
       - run: python -m unittest discover -s agent_from_scratch/tests -q
 
   training:
-    name: unit tests with the training libraries
+    name: unit tests with the training libraries and llama.cpp
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -39,4 +39,6 @@ jobs:
       # The CPU build keeps the job small; the tests train tiny models on the CPU.
       - run: pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e ".[train]"
+      # requirements.txt installs llama-cpp-python on macOS only; the chat-template tests need it.
+      - run: pip install "llama-cpp-python>=0.3,<0.4" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
       - run: python -m unittest discover -s agent_from_scratch/tests -q
