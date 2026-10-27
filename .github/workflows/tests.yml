@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+env:
+  LOGURU_LEVEL: WARNING  # the agent logs every tool call at DEBUG; keep failures readable
+
 jobs:
   unit:
     name: unit tests (Python ${{ matrix.python }})
