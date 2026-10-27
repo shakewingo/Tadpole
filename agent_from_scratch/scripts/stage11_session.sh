@@ -29,7 +29,8 @@ finish() {  # finish STAGE PATH...: mark the stage done and pack it for the copy
     shift
     dry && { echo "+ finish $stage"; return; }
     touch "outputs/s11-$stage.done"
-    tar czf "$PACK/s11-$stage.tgz" "$@" "$LOGS"
+    # A failed pack unmarks the stage, so a resumed session packs it again.
+    tar czf "$PACK/s11-$stage.tgz" "$@" "$LOGS" || { rm -f "outputs/s11-$stage.done"; exit 1; }
     touch "$PACK/s11-$stage.done"
 }
 final_run() {  # final_run OUT SPLIT SEED ARM: one frozen-protocol run (the base has no adapter)

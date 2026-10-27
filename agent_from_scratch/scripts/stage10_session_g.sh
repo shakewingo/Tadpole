@@ -29,7 +29,8 @@ finish() {  # finish STAGE PATH...: mark the stage done and pack it for the copy
     shift
     dry && { echo "+ finish $stage"; return; }
     touch "outputs/s10g-$stage.done"
-    tar czf "$PACK/s10g-$stage.tgz" "$@" "$LOGS" outputs/s10g-*.done
+    # A failed pack unmarks the stage, so a resumed session packs it again.
+    tar czf "$PACK/s10g-$stage.tgz" "$@" "$LOGS" outputs/s10g-*.done || { rm -f "outputs/s10g-$stage.done"; exit 1; }
     touch "$PACK/s10g-$stage.done"
 }
 rate() {  # rate PREFIX: pass@1 over outputs/PREFIX-s0..2

@@ -1,8 +1,11 @@
 """Stage 11's report module: pass@1, pairing by task and seed, task-level bootstrap, missing seeds."""
 
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory, mkdtemp
 import unittest
 
-from agent_from_scratch.evals.report import bootstrap_diff, pass_at_1, paired, table
+from agent_from_scratch.evals.report import bootstrap_diff, load, pass_at_1, paired, table
 from agent_from_scratch.evals.trajectory import compare
 
 
@@ -49,6 +52,22 @@ class ResultsTests(unittest.TestCase):
         self.assertNotIn("3 of 3", text)
         with self.assertRaisesRegex(ValueError, "Seed counts differ"):
             paired(arms["full"], arms["short"])
+
+    def test_runs_are_paired_by_their_recorded_seed_not_their_order(self):
+        with TemporaryDirectory() as directory:
+            def saved(seed, outcomes):
+                path = Path(mkdtemp(dir=directory))
+                (path / "metadata.json").write_text(json.dumps({"seed": seed}))
+                (path / "results.json").write_text(json.dumps(run(outcomes)))
+                return path
+            a = load([saved(0, {"a": True}), saved(1, {"a": False})])
+            b = load([saved(1, {"a": False}), saved(0, {"a": True})])  # given in the other order
+            self.assertEqual({k: paired(a, b)[k] for k in ("pairs", "wins", "losses")},
+                             {"pairs": 2, "wins": 0, "losses": 0})
+            with self.assertRaisesRegex(ValueError, "given twice"):
+                load([saved(0, {"a": True}), saved(0, {"a": True})])
+            with self.assertRaisesRegex(ValueError, "different seeds"):
+                paired(a, load([saved(0, {"a": True}), saved(2, {"a": False})]))
 
     def test_subsets_filter_by_skeleton(self):
         runs = [run({"a": True}, "hard") + run({"b": False}, "easy")]

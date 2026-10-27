@@ -59,15 +59,25 @@ class GrepTextTool(_SearchTool):
         except re.error as error:
             raise ToolExecutionError(ToolErrorCode.INVALID_ARGUMENTS, f"Invalid regular expression: {error}")
         root = self._directory(path)
-        matches = []
+        matches, partial = [], []
+
+        def result(truncated: bool) -> dict:
+            output = {"path": self._display(root), "matches": matches[:max_matches], "truncated": truncated}
+            if partial:  # files past max_file_bytes were searched only up to it
+                output["partially_searched"] = partial
+            return output
+
         for item in self._files(root, f"**/{include or '*'}"):
-            data = item.read_bytes()[:self.max_file_bytes]
+            with item.open("rb") as stream:
+                data = stream.read(self.max_file_bytes + 1)
             if b"\0" in data[:8192]:
                 continue
+            if len(data) > self.max_file_bytes:
+                data = data[:self.max_file_bytes]
+                partial.append(item.relative_to(root).as_posix())
             for number, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
                 if regex.search(line):
                     matches.append(f"{item.relative_to(root).as_posix()}:{number}: {line[:200]}")
                     if len(matches) > max_matches:
-                        return {"path": self._display(root), "matches": matches[:max_matches],
-                                "truncated": True}
-        return {"path": self._display(root), "matches": matches, "truncated": False}
+                        return result(True)
+        return result(False)

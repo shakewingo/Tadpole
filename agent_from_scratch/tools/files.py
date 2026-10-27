@@ -2,7 +2,6 @@
 
 Paths may be absolute, home-relative or relative to workspace. Optional confinement
 checks resolved paths; it is not an OS sandbox against concurrent path changes.
-Historical byte-offset tools live in evals/legacy_files.py.
 """
 
 from collections.abc import Iterable

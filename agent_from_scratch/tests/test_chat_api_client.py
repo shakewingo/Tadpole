@@ -193,6 +193,23 @@ class AgentLoopTests(unittest.TestCase):
             self.assertEqual(second[-2]["tool_calls"][0]["id"], "c1")
             self.assertEqual((second[-1]["role"], second[-1]["tool_call_id"]), ("tool", "c1"))
 
+    def test_reasoning_follows_a_repeated_call_id_the_agent_renames(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "a.txt").write_text("42")
+            server = FakeAPI([reply("", ("call_0", "read_file", {"path": "a.txt"}), reasoning="first"),
+                              reply("", ("call_0", "read_file", {"path": "a.txt"}), reasoning="second"),
+                              reply("42.")])
+            registry = ToolRegistry([ReadFileTool(workspace, restrict_to_workspace=True)])
+            agent = Agent(client(server), str(root / "state"), registry=registry,
+                          instruction_config=InstructionConfig(workspace=workspace))
+            agent.run_turn("Read a.txt twice.")
+            turns = [m for m in server.sent[2]["messages"] if m.get("tool_calls")]
+            self.assertNotEqual(turns[0]["tool_calls"][0]["id"], turns[1]["tool_calls"][0]["id"])
+            self.assertEqual([m["reasoning_content"] for m in turns], ["first", "second"])
+
 
 if __name__ == "__main__":
     unittest.main()
