@@ -110,6 +110,7 @@ class LLM:
         verbose=False,  # turn off tensor / metadata loading, prefix-match, timing info from llama-cpp-python
         chat_template_path: str | Path | None = CHAT_TEMPLATE_PATH,
         sampling: Mapping[str, float] | None = None,
+        lora_path: str | Path | None = None,  # a LoRA adapter in llama.cpp's GGUF format
     ):
         from llama_cpp import Llama
 
@@ -118,7 +119,9 @@ class LLM:
             n_ctx=n_ctx,
             n_gpu_layers=n_gpu_layers,
             verbose=verbose,
+            **({"lora_path": str(lora_path)} if lora_path else {}),
         )
+        self.lora_path = str(lora_path) if lora_path else None
         self.temperature = temperature
         self.max_tokens = max_tokens
         # top_p/top_k/min_p; None keeps llama-cpp-python's own defaults.
@@ -169,6 +172,7 @@ class LLM:
     def settings(self) -> dict[str, Any]:
         """Snapshot the actual configuration used by this model instance."""
         return {"backend": "llama_cpp", "model_path": self.model_path,
+                "lora_path": getattr(self, "lora_path", None),
                 "temperature": self.temperature, **getattr(self, "sampling", {}),
                 "max_tokens": self.max_tokens, "n_ctx": self.n_ctx,
                 "n_gpu_layers": self.n_gpu_layers,
@@ -557,11 +561,11 @@ class ChatAPIClient:
 
 
 def make_model() -> LLM | ChatAPIClient:
-    """The agent's model: the chat API AGENT_BASE_URL names, or the local GGUF when it is unset
-    (config.AGENT_API_VARIABLES)."""
+    """The agent's model: the chat API AGENT_BASE_URL names, or the local GGUF when it is unset,
+    with the LoRA adapter AGENT_LORA_PATH names on top (config.AGENT_API_VARIABLES)."""
     base_url = os.environ.get("AGENT_BASE_URL")
     if not base_url:
-        return LLM()
+        return LLM(lora_path=os.environ.get("AGENT_LORA_PATH") or None)
     model = os.environ.get("AGENT_MODEL")
     if not model:
         raise ValueError("AGENT_BASE_URL is set; set AGENT_MODEL to the model ID to use.")

@@ -18,7 +18,7 @@ import httpx
 from loguru import logger
 
 from ..agent import Agent
-from ..config import AgentLimits
+from ..config import interactive_limits
 from ..context import InstructionConfig, InstructionLoadError
 from ..llm import make_model
 from ..session import SessionStore
@@ -329,9 +329,7 @@ def main() -> None:
     configure_logging(config.token)
     Path(config.state_dir).mkdir(parents=True, exist_ok=True)
     llm = make_model()  # AGENT_BASE_URL picks a chat API; otherwise the local GGUF
-    # Planning lengthens weak-model runs, so the bot raises the turn budgets with it, as the REPL does.
-    agent = Agent(llm, state_dir=config.state_dir,
-                  limits=AgentLimits(planning=True, max_iterations=30, max_tool_calls=60),
+    agent = Agent(llm, state_dir=config.state_dir, limits=interactive_limits(),
                   instruction_config=InstructionConfig(workspace=default_workspace))
     store = SessionStore(Path(config.state_dir, "sessions"))
     client = TelegramClient(config.token)

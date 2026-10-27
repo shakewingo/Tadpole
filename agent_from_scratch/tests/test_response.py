@@ -316,6 +316,17 @@ class GenerateTests(unittest.TestCase):
                 backend.tokenize.assert_not_called()
 
     @needs_llama_cpp
+    def test_a_lora_adapter_is_loaded_with_the_model_and_recorded(self):
+        with patch("llama_cpp.Llama") as backend:
+            backend.return_value.n_ctx.return_value = 4096
+            plain = LLM(n_ctx=0, chat_template_path=None)
+            self.assertNotIn("lora_path", backend.call_args.kwargs)
+            adapted = LLM(n_ctx=0, chat_template_path=None, lora_path="models/ei-3-lora-f16.gguf")
+            self.assertEqual(backend.call_args.kwargs["lora_path"], "models/ei-3-lora-f16.gguf")
+        self.assertIsNone(plain.settings()["lora_path"])
+        self.assertEqual(adapted.settings()["lora_path"], "models/ei-3-lora-f16.gguf")
+
+    @needs_llama_cpp
     def test_window_uses_effective_backend_size(self):
         with patch("llama_cpp.Llama") as backend:
             backend.return_value.n_ctx.return_value = 4096
