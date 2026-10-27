@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from collections.abc import Iterator, Mapping
@@ -50,31 +51,36 @@ class TelegramClient:
         params: dict[str, Any] = {"timeout": poll_timeout}
         if offset is not None:
             params["offset"] = offset
-        response = self._client.get(f"{self._base}/getUpdates", params=params)
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise TelegramAPIError(f"getUpdates failed: {payload}")
+        payload = self._payload("getUpdates", self._client.get(f"{self._base}/getUpdates", params=params))
         result = payload.get("result")
         if not isinstance(result, list):
             raise TelegramAPIError(f"getUpdates returned no result list: {payload}")
         return result
 
     def send_message(self, chat_id: int | str, text: str) -> None:
-        response = self._client.post(f"{self._base}/sendMessage",
-                                      json={"chat_id": chat_id, "text": text})
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise TelegramAPIError(f"sendMessage failed: {payload}")
+        self._payload("sendMessage", self._client.post(f"{self._base}/sendMessage",
+                                                       json={"chat_id": chat_id, "text": text}))
 
     def send_chat_action(self, chat_id: int | str, action: str = "typing") -> None:
-        response = self._client.post(f"{self._base}/sendChatAction",
-                                      json={"chat_id": chat_id, "action": action})
-        response.raise_for_status()
+        self._payload("sendChatAction", self._client.post(f"{self._base}/sendChatAction",
+                                                          json={"chat_id": chat_id, "action": action}))
+
+    @staticmethod
+    def _payload(method: str, response: httpx.Response) -> dict[str, Any]:
+        """The decoded reply, or TelegramAPIError with Telegram's own description. httpx's error
+        message would quote the request URL, and the URL holds the bot token."""
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            try:
+                description = response.json().get("description")
+            except ValueError:
+                description = response.reason_phrase
+            raise TelegramAPIError(f"{method} failed: HTTP {response.status_code}: {description}") from None
         payload = response.json()
         if not payload.get("ok"):
-            raise TelegramAPIError(f"sendChatAction failed: {payload}")
+            raise TelegramAPIError(f"{method} failed: {payload}")
+        return payload
 
     def close(self) -> None:
         self._client.close()
@@ -304,11 +310,23 @@ def poll_loop(agent: Agent, store: SessionStore, client: Any, allowed_user_id: i
             offset = new_offset
 
 
+def configure_logging(token: str, sink: Any = sys.stderr) -> None:
+    """Log as loguru does by default, but never write the bot token: a 24/7 bot's log is the file
+    people paste into an issue. Tracebacks leave out variable values for the same reason."""
+    def redact(record: dict[str, Any]) -> bool:
+        record["message"] = record["message"].replace(token, "<bot-token>")
+        return True
+
+    logger.remove()
+    logger.add(sink, level=os.environ.get("LOGURU_LEVEL", "DEBUG"), filter=redact, diagnose=False)
+
+
 def main() -> None:
     try:
         config = load_config_from_env(os.environ)
     except ValueError as error:
         raise SystemExit(str(error)) from error
+    configure_logging(config.token)
     Path(config.state_dir).mkdir(parents=True, exist_ok=True)
     llm = make_model()  # AGENT_BASE_URL picks a chat API; otherwise the local GGUF
     # Planning lengthens weak-model runs, so the bot raises the turn budgets with it, as the REPL does.

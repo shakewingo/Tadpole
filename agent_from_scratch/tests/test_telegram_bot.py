@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 import time
 import unittest
 from pathlib import Path
@@ -8,11 +10,12 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import httpx
+from loguru import logger
 
 from agent_from_scratch.agent import Agent
 from agent_from_scratch.bots.telegram_bot import (
     BotConfig, DEFAULT_STATE_DIR, MAX_MESSAGE_LENGTH, SESSION_RESET_COMMANDS, TelegramAPIError,
-    TelegramClient, extract_message, format_reply, handle_update, is_allowed,
+    TelegramClient, configure_logging, extract_message, format_reply, handle_update, is_allowed,
     load_active_sessions, load_config_from_env, load_offset, poll_loop, process_updates, save_offset,
     truncate_for_telegram, typing,
 )
@@ -68,6 +71,18 @@ class TelegramClientTests(unittest.TestCase):
         with self.assertRaises(TelegramAPIError):
             self.client.send_message(42, "hello")
 
+    def test_an_http_error_names_telegrams_reason_but_never_the_token(self):
+        request = httpx.Request("GET", "https://api.telegram.org/bottest-token/getUpdates")
+        self.client._client.get.return_value = httpx.Response(
+            409, json={"ok": False, "description": "Conflict: terminated by other getUpdates request"},
+            request=request)
+        with self.assertRaises(TelegramAPIError) as caught:
+            self.client.get_updates(None)
+        self.assertIn("HTTP 409: Conflict: terminated by other getUpdates request", str(caught.exception))
+        self.assertNotIn("test-token", str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertTrue(caught.exception.__suppress_context__)  # httpx's URL is not chained in either
+
     def test_send_chat_action_posts_typing(self):
         response = Mock()
         response.json.return_value = {"ok": True, "result": True}
@@ -76,6 +91,18 @@ class TelegramClientTests(unittest.TestCase):
         args, kwargs = self.client._client.post.call_args
         self.assertEqual(args[0], "https://api.telegram.org/bottest-token/sendChatAction")
         self.assertEqual(kwargs["json"], {"chat_id": 42, "action": "typing"})
+
+
+class LoggingTests(unittest.TestCase):
+    def test_the_token_never_reaches_the_log(self):
+        lines = []
+        self.addCleanup(lambda: (logger.remove(),
+                                 logger.add(sys.stderr, level=os.environ.get("LOGURU_LEVEL", "DEBUG"))))
+        configure_logging("123:secret", sink=lines.append)
+        logger.warning("getUpdates failed for https://api.telegram.org/bot123:secret/getUpdates")
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn("123:secret", lines[0])
+        self.assertIn("bot<bot-token>/getUpdates", lines[0])
 
 
 class TypingTests(unittest.TestCase):
