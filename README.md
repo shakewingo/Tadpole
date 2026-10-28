@@ -37,17 +37,26 @@ pip install -e .
 
 ### Choose a model
 
-Pick one row and set its variables: `export` them for the terminal, or uncomment the matching
-block in the [bot's env file](agent_from_scratch/deploy/telegram-bot.env.example).
+Use a strong model through any OpenAI-compatible API: DeepSeek, OpenAI, OpenRouter, or your own
+vLLM or LM Studio server. `export` these for the terminal, or put them in the
+[bot's env file](agent_from_scratch/deploy/telegram-bot.env.example):
 
-| Model | Where it runs | Variables |
-|---|---|---|
-| **Any OpenAI-compatible API**: OpenAI, DeepSeek, OpenRouter, LM Studio, vLLM | the provider | `AGENT_BASE_URL=https://api.deepseek.com`<br>`AGENT_MODEL=deepseek-flash`<br>`AGENT_API_KEY=sk-...`<br>`AGENT_N_CTX=` the model's window (optional, default 32768) |
-| **A local model with Ollama**: any model with tool calling | a local Ollama server, any OS | `AGENT_BASE_URL=http://localhost:11434/v1`<br>`AGENT_MODEL=hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M`<br>`AGENT_N_CTX=32768` |
-| **A local GGUF with llama.cpp**: Qwen2 or Qwen3 only, as the agent uses Qwen's chat template | in-process, macOS only (Qwen3-4B Q4_K_M: about 2.5 GB; 16 GB of memory is plenty) | none: leave `AGENT_BASE_URL` unset; `AGENT_MODEL_PATH=` another GGUF (default: Qwen3-4B Q4_K_M) |
-| **Post-trained Qwen3-4B**: a Tadpole [adapter](#download-the-adapters-and-data) | in-process with llama.cpp, macOS only | `AGENT_MODEL_PATH=models/Qwen3-4B-Instruct-2507-Q8_0.gguf`<br>`AGENT_LORA_PATH=models/ei-3-lora-f16.gguf` (or sft-1, sft-2); planning is then off, as in the adapters' training and evaluation |
+```sh
+export AGENT_BASE_URL=https://api.deepseek.com   # the API root; often ends in /v1
+export AGENT_MODEL=deepseek-flash                # the provider's model ID
+export AGENT_API_KEY=sk-...
+export AGENT_N_CTX=32768                         # optional: the model's context window
+```
 
-The local rows need the model first. With Qwen3-4B, the model this project trains:
+<details>
+<summary><b>Run Qwen3-4B locally, base or post-trained</b>: the model this project trains, for
+studying the training rather than everyday use</summary>
+
+| Option | Variables |
+|---|---|
+| Ollama, any OS | `AGENT_BASE_URL=http://localhost:11434/v1`, `AGENT_MODEL=hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M`, `AGENT_N_CTX=32768` |
+| llama.cpp in-process, macOS; Qwen2 or Qwen3 GGUFs | leave `AGENT_BASE_URL` unset; `AGENT_MODEL_PATH` defaults to `models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf` |
+| A Tadpole [adapter](#download-the-adapters-and-data) on llama.cpp, macOS | `AGENT_MODEL_PATH=models/Qwen3-4B-Instruct-2507-Q8_0.gguf`, `AGENT_LORA_PATH=models/ei-3-lora-f16.gguf` (or sft-1, sft-2); planning turns off, as in training |
 
 ```sh
 # Ollama: pull, then serve with a window large enough for the agent
@@ -57,10 +66,15 @@ OLLAMA_CONTEXT_LENGTH=32768 ollama serve
 # llama.cpp: the default AGENT_MODEL_PATH
 hf download unsloth/Qwen3-4B-Instruct-2507-GGUF Qwen3-4B-Instruct-2507-Q4_K_M.gguf --local-dir models
 
-# Post-trained: the Q8_0 base the adapters were measured on, and an adapter
+# An adapter, on the Q8_0 base it was measured on
 hf download unsloth/Qwen3-4B-Instruct-2507-GGUF Qwen3-4B-Instruct-2507-Q8_0.gguf --local-dir models
 hf download Shakewin/tadpole-qwen3-4b-ei-3 ei-3-lora-f16.gguf --local-dir models
 ```
+
+llama.cpp keeps the model in memory while the agent runs: about 8.5 GB for the Q8_0 base with its
+32k window, which slows a 16 GB Mac.
+
+</details>
 
 ### Chat in the terminal
 
@@ -161,14 +175,8 @@ Full tables, paired tests and limitations: [docs/results.md](agent_from_scratch/
 
 ### Download the adapters and data
 
-| | On Hugging Face |
-|---|---|
-| SFT-1 adapter | [Shakewin/tadpole-qwen3-4b-sft-1](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-1) |
-| SFT-2 adapter | [Shakewin/tadpole-qwen3-4b-sft-2](https://huggingface.co/Shakewin/tadpole-qwen3-4b-sft-2) |
-| EI-3 adapter | [Shakewin/tadpole-qwen3-4b-ei-3](https://huggingface.co/Shakewin/tadpole-qwen3-4b-ei-3) |
-| SFT data | [Shakewin/tadpole-sft-data](https://huggingface.co/datasets/Shakewin/tadpole-sft-data) |
-
-Each card shows how to serve the adapter with vLLM, or rebuild every training set exactly.
+Download all adapters and training data from [Hugging Face](https://huggingface.co/Shakewin).
+Each card includes serving or data-reproduction instructions.
 
 ## Roadmap
 
