@@ -13,7 +13,8 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 PROMPTS_DIR = _PACKAGE_DIR / "prompts"
 CHAT_TEMPLATE_PATH = PROMPTS_DIR / "qwen_chat.jinja"
 # The local model, a GGUF file for llama.cpp: AGENT_MODEL_PATH, or Qwen3-4B-Instruct-2507 Q4_K_M
-# under models/ at the repository root, where the README downloads it.
+# under models/ at the repository root, where the README downloads it. AGENT_LORA_PATH adds a
+# LoRA adapter in llama.cpp's GGUF format, such as a converted Tadpole adapter (`llm.make_model`).
 MODEL_PATH = Path(os.environ.get("AGENT_MODEL_PATH")
                   or _PACKAGE_DIR.parent / "models" / "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")
 
@@ -65,3 +66,11 @@ class AgentLimits:
     elide_ratio: float | None = 0.6  # soft-threhold in compact mechanism, stub old tool outputs at this share of the usable window; None disables
     elide_min_chars: int = 400  # only outputs longer than this are elided
     planning: bool = False  # update_plan tool plus a per-request plan reminder
+
+
+def interactive_limits() -> AgentLimits:
+    """The terminal's and the Telegram bot's budgets. Planning lengthens weak-model runs, so the
+    turn budgets are raised. Planning is off when AGENT_LORA_PATH puts an adapter on the local
+    GGUF, as in the adapters' training and evaluation."""
+    adapter = os.environ.get("AGENT_LORA_PATH") and not os.environ.get("AGENT_BASE_URL")
+    return AgentLimits(planning=not adapter, max_iterations=30, max_tool_calls=60)

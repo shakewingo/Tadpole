@@ -1,0 +1,12 @@
+[Unit]
+Description=Tadpole Telegram bot
+After=network-online.target
+
+[Service]
+# /REPLACE/WITH/REPO/PATH is the repository's absolute path (the README's sed fills it in).
+ExecStart=/bin/sh /REPLACE/WITH/REPO/PATH/agent_from_scratch/scripts/run_telegram_bot.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

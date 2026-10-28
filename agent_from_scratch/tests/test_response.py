@@ -5,6 +5,8 @@ import json
 import unittest
 from importlib.util import find_spec
 from copy import deepcopy
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from unittest.mock import Mock, patch
 from agent_from_scratch.llm import LLM, LLMResponse, ResponseType, ResponseError, ResponseErrorCode, RESPONSE_ERROR_MESSAGES
@@ -314,6 +316,27 @@ class GenerateTests(unittest.TestCase):
                 self.assertIsNone(measured["prompt_tokens"])
                 self.assertIsNone(measured["remaining_tokens"])
                 backend.tokenize.assert_not_called()
+
+    @needs_llama_cpp
+    def test_a_lora_adapter_is_loaded_with_the_model_and_recorded(self):
+        with TemporaryDirectory() as directory, patch("llama_cpp.Llama") as backend:
+            adapter = str(Path(directory, "ei-3-lora-f16.gguf"))
+            Path(adapter).write_bytes(b"GGUF")
+            backend.return_value.n_ctx.return_value = 4096
+            plain = LLM(n_ctx=0, chat_template_path=None)
+            self.assertNotIn("lora_path", backend.call_args.kwargs)
+            adapted = LLM(n_ctx=0, chat_template_path=None, lora_path=adapter)
+            self.assertEqual(backend.call_args.kwargs["lora_path"], adapter)
+        self.assertIsNone(plain.settings()["lora_path"])
+        self.assertEqual(adapted.settings()["lora_path"], adapter)
+
+    @needs_llama_cpp
+    def test_a_missing_lora_adapter_is_refused_before_loading(self):
+        # llama-cpp-python accepts the missing path and crashes on the first decode instead.
+        with patch("llama_cpp.Llama") as backend:
+            with self.assertRaisesRegex(ValueError, "LoRA adapter not found"):
+                LLM(n_ctx=0, chat_template_path=None, lora_path="no/such/adapter.gguf")
+        backend.assert_not_called()
 
     @needs_llama_cpp
     def test_window_uses_effective_backend_size(self):

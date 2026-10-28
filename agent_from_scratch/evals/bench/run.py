@@ -202,7 +202,8 @@ def load_model(args):
                           temperature=temperature, max_tokens=max_tokens, sampling=decoding,
                           n_ctx=BENCH_N_CTX)
     return seed_every_request(LLM(str(args.model_path), temperature=temperature, max_tokens=max_tokens,
-                                  sampling=decoding, n_ctx=BENCH_N_CTX), args.seed)
+                                  sampling=decoding, n_ctx=BENCH_N_CTX, lora_path=args.lora_path),
+                              args.seed)
 
 
 def main():
@@ -228,6 +229,8 @@ def main():
     parser.add_argument("--served-model", default=BENCH_MODEL["id"],
                         help="Base model name as the vLLM server serves it")
     parser.add_argument("--adapter", help="LoRA module name on the vLLM server; omit for the base control")
+    parser.add_argument("--lora-path", type=Path,
+                        help="A LoRA adapter in llama.cpp's GGUF format (--backend llama_cpp)")
     parser.add_argument("--limits", default="{}", help='JSON AgentLimits overrides')
     parser.add_argument("--final", action="store_true",
                         help="Required to run --split test; refuses manifest drift and a protocol mismatch")
@@ -244,6 +247,8 @@ def main():
         parser.error("The supplied manifest does not exist.")
     if args.adapter and args.backend != "vllm":
         parser.error("--adapter needs --backend vllm.")
+    if args.lora_path and (args.backend != "llama_cpp" or not args.lora_path.is_file()):
+        parser.error("--lora-path needs --backend llama_cpp and an existing GGUF adapter.")
     entries = specs(args.split)
     if args.tasks:
         wanted = set(args.tasks.split(","))

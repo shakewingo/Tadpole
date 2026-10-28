@@ -10,6 +10,7 @@ from unittest.mock import patch
 import httpx
 
 from agent_from_scratch.agent import Agent
+from agent_from_scratch.config import interactive_limits
 from agent_from_scratch.context import InstructionConfig, context_fits, window_share_ratio
 from agent_from_scratch.llm import ChatAPIClient, LLM, ResponseError, ResponseType, make_model
 from agent_from_scratch.tools.base import ToolRegistry
@@ -167,6 +168,22 @@ class MakeModelTests(unittest.TestCase):
     def test_no_base_url_keeps_the_local_gguf(self):
         with patch.dict("os.environ", {}, clear=True), patch("agent_from_scratch.llm.LLM") as local:
             self.assertIs(make_model(), local.return_value)
+        local.assert_called_once_with(lora_path=None)
+
+    def test_a_lora_path_puts_an_adapter_on_the_local_gguf(self):
+        with patch.dict("os.environ", {"AGENT_LORA_PATH": "models/ei-3-lora-f16.gguf"}, clear=True), \
+                patch("agent_from_scratch.llm.LLM") as local:
+            make_model()
+        local.assert_called_once_with(lora_path="models/ei-3-lora-f16.gguf")
+
+    def test_planning_is_on_for_the_terminal_and_bot_unless_an_adapter_is_loaded(self):
+        lora = {"AGENT_LORA_PATH": "models/ei-3-lora-f16.gguf"}
+        api = {"AGENT_BASE_URL": "https://api.deepseek.com"}
+        for env, planning in (({}, True), (lora, False), ({**lora, **api}, True)):
+            with self.subTest(env=env), patch.dict("os.environ", env, clear=True):
+                limits = interactive_limits()
+                self.assertEqual((limits.planning, limits.max_iterations, limits.max_tool_calls),
+                                 (planning, 30, 60))
 
 
 class AgentLoopTests(unittest.TestCase):
