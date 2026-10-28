@@ -166,8 +166,9 @@ counted, never repaired. Nothing derived from a test set is ever trained on.
 | **EI-3** | SFT-2's data plus its own verified rollouts on the 80 leveled train tasks, three rounds | all 144 val tasks, the leveled 40 read first |
 | **GRPO** | online updates from SFT-2's adapter on the same 80 leveled tasks | all 144 val tasks; not run on held-out sets |
 
-Every final model ran once on the test, the hard test and the external test. Val grew with the
-training data: a single-turn val cannot see a model that asks instead of acting in a
+Every final model ran once on the test, the hard test and the external test. Training data and
+every run used the agent with planning off (`"planning": false` in the manifest's limits). Val
+grew with the training data: a single-turn val cannot see a model that asks instead of acting in a
 conversation, and once SFT-2 solved nearly every single- and multi-turn val task, the leveled val
 types gave the comparison room to move.
 

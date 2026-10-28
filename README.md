@@ -45,7 +45,7 @@ block in the [bot's env file](agent_from_scratch/deploy/telegram-bot.env.example
 | **Any OpenAI-compatible API**: OpenAI, DeepSeek, OpenRouter, LM Studio, vLLM | the provider | `AGENT_BASE_URL=https://api.deepseek.com`<br>`AGENT_MODEL=deepseek-flash`<br>`AGENT_API_KEY=sk-...`<br>`AGENT_N_CTX=` the model's window (optional, default 32768) |
 | **A local model with Ollama**: any model with tool calling | a local Ollama server, any OS | `AGENT_BASE_URL=http://localhost:11434/v1`<br>`AGENT_MODEL=hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M`<br>`AGENT_N_CTX=32768` |
 | **A local GGUF with llama.cpp**: Qwen2 or Qwen3 only, as the agent uses Qwen's chat template | in-process, macOS only (Qwen3-4B Q4_K_M: about 2.5 GB; 16 GB of memory is plenty) | none: leave `AGENT_BASE_URL` unset; `AGENT_MODEL_PATH=` another GGUF (default: Qwen3-4B Q4_K_M) |
-| **Post-trained Qwen3-4B**: a Tadpole [adapter](#download-the-adapters-and-data) | in-process with llama.cpp, macOS only | `AGENT_MODEL_PATH=models/Qwen3-4B-Instruct-2507-Q8_0.gguf`<br>`AGENT_LORA_PATH=models/ei-3-lora-f16.gguf` (or sft-1, sft-2)<br>`AGENT_PLANNING=0` (the adapters were trained without the plan tool) |
+| **Post-trained Qwen3-4B**: a Tadpole [adapter](#download-the-adapters-and-data) | in-process with llama.cpp, macOS only | `AGENT_MODEL_PATH=models/Qwen3-4B-Instruct-2507-Q8_0.gguf`<br>`AGENT_LORA_PATH=models/ei-3-lora-f16.gguf` (or sft-1, sft-2); planning is then off, as in the adapters' training and evaluation |
 
 The local rows need the model first. With Qwen3-4B, the model this project trains:
 
@@ -61,11 +61,6 @@ hf download unsloth/Qwen3-4B-Instruct-2507-GGUF Qwen3-4B-Instruct-2507-Q4_K_M.gg
 hf download unsloth/Qwen3-4B-Instruct-2507-GGUF Qwen3-4B-Instruct-2507-Q8_0.gguf --local-dir models
 hf download Shakewin/tadpole-qwen3-4b-ei-3 ei-3-lora-f16.gguf --local-dir models
 ```
-
-LOCAL_RESULTS_PLACEHOLDER
-
-A 4B model is a capable tool user on short tasks and a weak planner on long ones; for daily use,
-a larger API model gives better answers.
 
 ### Chat in the terminal
 
@@ -137,7 +132,8 @@ to run it yourself. Training needs a 24 GB CUDA GPU; the whole post-training lin
 
 ## Post-training results
 
-The agent's code, prompts and tools were frozen; only the weights changed. Every choice was made
+The agent's code, prompts and tools were frozen, with planning off (no `update_plan` tool); only
+the weights changed. Every choice was made
 on val, and each final model ran once on two held-out sets whose task types no training set
 contains: 140 single-turn tasks (test) and 80 leveled tasks (hard test), three samples each.
 

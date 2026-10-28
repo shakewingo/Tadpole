@@ -70,7 +70,7 @@ class AgentLimits:
 
 def interactive_limits() -> AgentLimits:
     """The terminal's and the Telegram bot's budgets. Planning lengthens weak-model runs, so the
-    turn budgets are raised. AGENT_PLANNING=0 turns planning off: Tadpole's adapters were trained
-    and measured without the update_plan tool."""
-    planning = os.environ.get("AGENT_PLANNING", "1").strip().lower() not in ("0", "false", "no", "off")
-    return AgentLimits(planning=planning, max_iterations=30, max_tool_calls=60)
+    turn budgets are raised. Planning is off when AGENT_LORA_PATH puts an adapter on the local
+    GGUF, as in the adapters' training and evaluation."""
+    adapter = os.environ.get("AGENT_LORA_PATH") and not os.environ.get("AGENT_BASE_URL")
+    return AgentLimits(planning=not adapter, max_iterations=30, max_tool_calls=60)

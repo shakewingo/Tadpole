@@ -176,10 +176,11 @@ class MakeModelTests(unittest.TestCase):
             make_model()
         local.assert_called_once_with(lora_path="models/ei-3-lora-f16.gguf")
 
-    def test_planning_is_on_for_the_terminal_and_bot_unless_turned_off(self):
-        for value, planning in ((None, True), ("1", True), ("0", False), ("off", False)):
-            with self.subTest(value=value), patch.dict(
-                    "os.environ", {} if value is None else {"AGENT_PLANNING": value}, clear=True):
+    def test_planning_is_on_for_the_terminal_and_bot_unless_an_adapter_is_loaded(self):
+        lora = {"AGENT_LORA_PATH": "models/ei-3-lora-f16.gguf"}
+        api = {"AGENT_BASE_URL": "https://api.deepseek.com"}
+        for env, planning in (({}, True), (lora, False), ({**lora, **api}, True)):
+            with self.subTest(env=env), patch.dict("os.environ", env, clear=True):
                 limits = interactive_limits()
                 self.assertEqual((limits.planning, limits.max_iterations, limits.max_tool_calls),
                                  (planning, 30, 60))

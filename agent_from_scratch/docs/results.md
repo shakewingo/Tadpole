@@ -40,7 +40,9 @@ This is a small local benchmark. None of it is a claim about general agent abili
 All adapters use one recipe: LoRA rank 16 on every attention and MLP projection of the bf16
 base, loss on the assistant's tokens only, AdamW at $10^{-4}$ with warmup and cosine decay, up to
 three epochs. Every choice (epoch, data mix, which round to keep) was made on val. The test, the
-hard test and the external test were each run once per model, after the choices were made.
+hard test and the external test were each run once per model, after the choices were made. All
+training data and every evaluation used the agent with planning off (no `update_plan` tool), as
+the benchmark manifest freezes it.
 
 ## Held-out results
 
@@ -204,8 +206,8 @@ rows removed (test 0.714, hard test 0.442, BFCL 0.385). Neither changes the conc
   EI-3. Sampling on a batched server is not exactly repeatable: one adapter's greedy BFCL score
   differed by 0.025 between two sessions.
 - BFCL is a local adaptation; When2Call is in-distribution for every model trained on public data.
-- The agent's harness (tools, limits, prompts) is fixed. A different harness could rank the models
-  differently.
+- The agent's harness (tools, limits, prompts, planning off) is fixed. A different harness could
+  rank the models differently.
 
 ## Cost
 
