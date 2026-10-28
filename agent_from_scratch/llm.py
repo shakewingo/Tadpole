@@ -114,6 +114,10 @@ class LLM:
     ):
         from llama_cpp import Llama
 
+        # llama-cpp-python does not check this path: a missing adapter crashes the first decode
+        # (a segmentation fault), which a 24/7 bot under launchd turns into a restart loop.
+        if lora_path and not Path(lora_path).is_file():
+            raise ValueError(f"LoRA adapter not found: {lora_path}")
         self.llm = Llama(
             model_path=model_path,
             n_ctx=n_ctx,

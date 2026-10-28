@@ -376,6 +376,18 @@ class ProcessUpdatesTests(unittest.TestCase):
         self.assertEqual(next_offset, 3)
         self.assertEqual(self.client.send_message.call_count, 2)
 
+    def test_the_offset_is_saved_before_the_turn_so_a_crash_cannot_replay_it(self):
+        seen = []
+
+        def turn(*args, **kwargs):
+            seen.append(load_offset(self.offset_path))  # a segfault here must not replay the update
+            return TurnResult(messages=[], stop_reason=RunStopReason.FINAL_RESPONSE, final_answer="ok")
+        self.agent.run_turn = Mock(side_effect=turn)
+        process_updates([_text_update(1, "hi", update_id=41)], agent=self.agent, store=self.store,
+                        client=self.client, allowed_user_id=99, active_sessions={}, compact_pending={},
+                        offset_path=self.offset_path)
+        self.assertEqual(seen, [42])
+
     def test_a_chosen_session_survives_a_restart(self):
         sessions_path = Path(self.state_dir, "active_sessions.json")
         process_updates([_text_update(1, "/new", update_id=1)], agent=self.agent, store=self.store,

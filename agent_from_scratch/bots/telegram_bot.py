@@ -270,9 +270,16 @@ def process_updates(updates: list[dict[str, Any]], *, agent: Agent, store: Sessi
                     client: Any, allowed_user_id: int, active_sessions: dict[Any, str],
                     compact_pending: dict[Any, bool], offset_path: Path,
                     sessions_path: Path | None = None) -> int | None:
-    """Handle one batch of updates; return the next getUpdates offset, or None if unchanged."""
+    """Handle one batch of updates; return the next getUpdates offset, or None if unchanged.
+
+    The offset is saved before an update is handled: a crash that takes the process down (a
+    segfault in the model, an out-of-memory kill) then loses that one message instead of
+    replaying it on every restart.
+    """
     next_offset = None
     for update in updates:
+        next_offset = update["update_id"] + 1
+        save_offset(offset_path, next_offset)
         chosen = dict(active_sessions)
         try:
             handle_update(update, agent=agent, store=store, client=client,
@@ -282,8 +289,6 @@ def process_updates(updates: list[dict[str, Any]], *, agent: Agent, store: Sessi
             logger.exception("Failed to handle update {}", update.get("update_id"))
         if sessions_path is not None and active_sessions != chosen:
             save_active_sessions(sessions_path, active_sessions)
-        next_offset = update["update_id"] + 1
-        save_offset(offset_path, next_offset)
     return next_offset
 
 
