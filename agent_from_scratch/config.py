@@ -34,6 +34,13 @@ MAX_TOOL_CALLS_PER_RESPONSE = 8
 # N_CTX); a local server's own window is often smaller and must then be given.
 AGENT_API_VARIABLES = ("AGENT_BASE_URL", "AGENT_MODEL", "AGENT_API_KEY", "AGENT_N_CTX")
 
+# The ceiling on a remote chat API (`budget.ApiBudget`), kept outside the repository so that
+# clearing outputs/ does not refill it. AGENT_MAX_REQUESTS_PER_HOUR, AGENT_MAX_TOKENS_PER_DAY and
+# AGENT_BUDGET_FILE override these. The bot's busiest hour so far was 58 requests.
+MAX_API_REQUESTS_PER_HOUR = 300
+MAX_API_TOKENS_PER_DAY = 5_000_000
+API_BUDGET_PATH = Path.home() / ".tadpole" / "api_budget.json"
+
 # Stage 8 benchmark protocol, frozen in evals/bench/manifest.json. The control checkpoint is
 # served by vLLM in bf16 so that a LoRA adapter can later be compared on the same server with
 # only the adapter toggled. Sampling uses the model card's recommended values

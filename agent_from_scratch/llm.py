@@ -14,6 +14,7 @@ from typing import Dict, Any, TYPE_CHECKING, List
 
 from .config import (MAX_TOKENS, MAX_TOOL_CALLS_PER_RESPONSE, MODEL_PATH, N_CTX,
                      N_GPU_LAYERS, CHAT_TEMPLATE_PATH, TEMPERATURE)
+from .budget import ApiBudget, budget_for
 from .tools.base import ToolCall
 from .utils import render_prompt, extract_qwen_tool_calls
 
@@ -468,9 +469,11 @@ class ChatAPIClient:
 
     def __init__(self, base_url: str, model: str, api_key: str | None = None, *,
                  temperature: float = TEMPERATURE, max_tokens: int = MAX_TOKENS, n_ctx: int = N_CTX,
-                 timeout: float = 600.0, retries: int = 3, backoff: float = 2.0, transport=None):
+                 timeout: float = 600.0, retries: int = 3, backoff: float = 2.0, transport=None,
+                 budget: ApiBudget | None = None):
         import httpx
 
+        self.budget = budget
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self.http = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout, headers=headers,
                                  transport=transport)
@@ -483,15 +486,33 @@ class ChatAPIClient:
         # the call's ID when a request is built: the agent renames a repeated ID after generate.
         self._reasoning: list[tuple[ToolCall, str]] = []
 
-    def _request(self, body: dict) -> dict:
+    def _settle(self, reserved: int, actual: int) -> None:
+        if self.budget is not None:
+            self.budget.settle(reserved, actual)
+
+    def _request(self, body: dict, reserve: int = 0) -> dict:
+        """Post with retries. Each attempt is charged for a given budget first, so a crash cannot leave it uncounted.
+
+        A reply the server refused costs nothing. A transport error keeps its reservation, since
+        the model may have run after the connection was lost.
+        """
         import httpx
 
         for attempt in range(self.retries):
+            if self.budget is not None:
+                self.budget.charge(reserve)
             try:
                 response = self.http.post("/chat/completions", json=body)
                 if response.status_code < 500 and response.status_code != 429:
+                    if not response.is_success:
+                        self._settle(reserve, 0)
                     response.raise_for_status()
-                    return response.json()
+                    payload = response.json()
+                    usage = LLM.read_usage(payload.get("usage")) if isinstance(payload, dict) else None
+                    total = usage.get("total_tokens") if usage else None
+                    self._settle(reserve, reserve if total is None else total)
+                    return payload
+                self._settle(reserve, 0)
                 error: Exception = RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
             except (httpx.TransportError, httpx.TimeoutException) as transport:
                 error = transport
@@ -539,7 +560,8 @@ class ChatAPIClient:
                                 "stream": False}
         if tools:
             body["tools"] = list(tools.values())
-        raw = self._request(body)
+        reserve = math.ceil(self._characters(messages, tools) * self.tokens_per_char) + (body["max_tokens"] or 0)
+        raw = self._request(body, reserve)
         try:
             parsed = LLM.parse_response(
                 raw, MAX_TOOL_CALLS_PER_RESPONSE if max_tool_calls is None else max_tool_calls)
@@ -573,8 +595,12 @@ def make_model() -> LLM | ChatAPIClient:
     model = os.environ.get("AGENT_MODEL")
     if not model:
         raise ValueError("AGENT_BASE_URL is set; set AGENT_MODEL to the model ID to use.")
+    budget = budget_for(base_url, os.environ)
+    logger.info("Chat API {} with model {}; paid budget: {}", base_url, model,
+                f"{budget.max_requests_per_hour} requests/hour, {budget.max_tokens_per_day} tokens/day"
+                if budget else "none, a local server")
     return ChatAPIClient(base_url, model, os.environ.get("AGENT_API_KEY") or None,
-                         n_ctx=int(os.environ.get("AGENT_N_CTX") or N_CTX))
+                         n_ctx=int(os.environ.get("AGENT_N_CTX") or N_CTX), budget=budget)
 
 
 if __name__ == "__main__":
