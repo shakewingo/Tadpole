@@ -51,12 +51,12 @@ class ApiBudget:
             if ledger["requests"] >= self.max_requests_per_hour:
                 raise BudgetExceeded(
                     f"Paid API budget reached: {ledger['requests']} requests this hour "
-                    f"(AGENT_MAX_REQUESTS_PER_HOUR={self.max_requests_per_hour}). Nothing was sent.")
+                    f"(AGENT_MAX_REQUESTS_PER_HOUR={self.max_requests_per_hour}). This request was not sent.")
             if ledger["tokens"] + tokens > self.max_tokens_per_day:
                 raise BudgetExceeded(
                     f"Paid API budget reached: {ledger['tokens']} tokens used today, and this request "
                     f"could use {tokens} more (AGENT_MAX_TOKENS_PER_DAY={self.max_tokens_per_day}). "
-                    "Nothing was sent.")
+                    "This request was not sent.")
             ledger["requests"] += 1
             ledger["tokens"] += tokens
 
@@ -91,10 +91,10 @@ class ApiBudget:
             return dict.fromkeys(_FIELDS, 0)
         except ValueError as error:
             raise BudgetExceeded(f"Paid API budget file {self.path} is unreadable: {error}. "
-                                 "Nothing was sent; check or delete it.") from error
+                                 "This request was not sent; check or delete it.") from error
         if not isinstance(ledger, dict) or any(type(ledger.get(name)) is not int for name in _FIELDS):
             raise BudgetExceeded(f"Paid API budget file {self.path} is damaged. "
-                                 "Nothing was sent; check or delete it.")
+                                 "This request was not sent; check or delete it.")
         return ledger
 
 

@@ -5,15 +5,17 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 
 from agent_from_scratch.agent import Agent
+from agent_from_scratch.bots.telegram_bot import format_reply, handle_update
 from agent_from_scratch.budget import ApiBudget, BudgetExceeded
 from agent_from_scratch.config import interactive_limits
 from agent_from_scratch.context import InstructionConfig, context_fits, window_share_ratio
 from agent_from_scratch.llm import ChatAPIClient, LLM, ResponseError, ResponseType, make_model
+from agent_from_scratch.session import SessionStore
 from agent_from_scratch.tools.base import ToolRegistry
 from agent_from_scratch.tools.files import ReadFileTool, WriteFileTool
 from agent_from_scratch.tools.register import default_tool_schemas
@@ -228,6 +230,54 @@ class SpendingTests(unittest.TestCase):
         self.assertEqual(result.stop_reason, RunStopReason.MODEL_ERROR)
         self.assertIn("BudgetExceeded", result.error_message)
         self.assertEqual(len(server.headers), 1)
+
+    def test_the_bot_replies_with_the_reason_when_the_budget_is_spent(self):
+        budget = self.budget(requests=1)
+        budget.charge(1)
+        server, telegram = FakeAPI([reply("never")]), Mock()
+        update = {"update_id": 1, "message": {"from": {"id": 7}, "chat": {"id": 7}, "text": "Hello."}}
+        with TemporaryDirectory() as directory:
+            agent = Agent(client(server, budget=budget), directory, registry=ToolRegistry([]),
+                          instruction_config=InstructionConfig(workspace=Path(directory)))
+            handle_update(update, agent=agent, store=SessionStore(Path(directory, "sessions")), client=telegram,
+                          allowed_user_id=7, active_sessions={}, compact_pending={})
+        self.assertEqual(server.headers, [])
+        (chat_id, text), _ = telegram.send_message.call_args
+        self.assertEqual(chat_id, 7)
+        self.assertIn("AGENT_MAX_REQUESTS_PER_HOUR", text)
+
+    def test_a_refused_summary_reports_the_budget_when_the_request_cannot_fit_either(self):
+        """The summary's input fits this window and the whole history does not, so without the
+        summary the turn cannot continue; the reason must still be the budget."""
+        budget = self.budget(requests=1)
+        budget.charge(1)
+        server = FakeAPI([reply("never")])
+        history = []
+        for index in range(6):
+            history += [{"role": "user", "content": f"{index} " + "x" * 6000}, {"role": "assistant", "content": "ok"}]
+        with TemporaryDirectory() as directory:
+            model = client(server, budget=budget, n_ctx=14000)
+            agent = Agent(model, registry=ToolRegistry([]),
+                          instruction_config=InstructionConfig(workspace=Path(directory)))
+            result = agent.run_turn("Continue.", history)
+        self.assertFalse(context_fits(model.measure_context(result.messages, {}), 256))
+        self.assertEqual(result.model_requests[0].purpose, "compact")
+        self.assertEqual(server.headers, [])
+        self.assertEqual(result.stop_reason, RunStopReason.MODEL_ERROR)
+        self.assertIn("AGENT_MAX_REQUESTS_PER_HOUR", format_reply(result))
+
+    def test_a_refused_summary_is_not_attempted_again(self):
+        """A retry at the same cut cannot succeed, and each one would log another refusal."""
+        budget = self.budget(requests=1)
+        budget.charge(1)
+        history = [{"role": "user", "content": "x" * 6000}, {"role": "assistant", "content": "ok"},
+                   {"role": "user", "content": "y" * 6000}, {"role": "assistant", "content": "ok"}]
+        with TemporaryDirectory() as directory:
+            agent = Agent(client(FakeAPI(), budget=budget), registry=ToolRegistry([]),
+                          instruction_config=InstructionConfig(workspace=Path(directory)))
+            result = agent.run_turn("Continue.", history, compact=True)
+        self.assertEqual(sum(request.purpose == "compact" for request in result.model_requests), 1)
+        self.assertEqual(result.stop_reason, RunStopReason.MODEL_ERROR)
 
     def test_a_remote_api_gets_a_budget_from_the_environment(self):
         environment = {"AGENT_BASE_URL": "https://api.deepseek.com", "AGENT_MODEL": "deepseek-flash",
