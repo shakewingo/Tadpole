@@ -150,6 +150,16 @@ class ShellTests(unittest.TestCase):
         self.assertEqual((self.workspace / "result.txt").read_text(), "HELLO")
         self.assertIn("command", result.output)
 
+    def test_general_command_cannot_read_keys_that_spend_money(self):
+        """A command the model writes could otherwise start its own unbudgeted API calls."""
+        secrets = {"AGENT_API_KEY": "s1", "ANTHROPIC_API_KEY": "s2", "ANTHROPIC_AUTH_TOKEN": "s3",
+                   "DEEPSEEK_API_KEY": "s4", "TELEGRAM_BOT_TOKEN": "s5"}
+        printed = "".join(f'"${name}"' for name in secrets)
+        with patch.dict("os.environ", {**secrets, "TINY_KEPT": "kept"}):
+            result = ShellTool(self.workspace).invoke({"command": f'printf %s {printed} "$TINY_KEPT"'})
+        self.assertTrue(result.ok, result.error_message)
+        self.assertEqual(result.output["stdout"], "kept")
+
     def test_general_command_can_run_a_local_script_and_choose_cwd(self):
         directory = self.workspace / "subdirectory"
         directory.mkdir()

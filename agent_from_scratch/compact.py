@@ -9,6 +9,7 @@ from hashlib import sha256
 import json
 from typing import TYPE_CHECKING
 
+from .budget import BudgetExceeded
 from .config import AgentLimits, PROMPTS_DIR
 from .context import ContextState, context_fits
 from .llm import LLM, ResponseError, ResponseType
@@ -151,6 +152,10 @@ class Compactor:
                 request.error_message = "Compaction requires a nonempty text summary without tool calls."
                 return None
             return response.content
+        except BudgetExceeded as error:
+            # Not a failed summary: no retry can pass, and the turn must report this as its reason.
+            self._record_error(request, error, generated=False)
+            raise
         except Exception as error:
             self._record_error(request, error, generated=generated)
             return None

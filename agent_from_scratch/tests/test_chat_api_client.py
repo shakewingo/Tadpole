@@ -5,14 +5,17 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 
 from agent_from_scratch.agent import Agent
+from agent_from_scratch.bots.telegram_bot import format_reply, handle_update
+from agent_from_scratch.budget import ApiBudget, BudgetExceeded
 from agent_from_scratch.config import interactive_limits
 from agent_from_scratch.context import InstructionConfig, context_fits, window_share_ratio
 from agent_from_scratch.llm import ChatAPIClient, LLM, ResponseError, ResponseType, make_model
+from agent_from_scratch.session import SessionStore
 from agent_from_scratch.tools.base import ToolRegistry
 from agent_from_scratch.tools.files import ReadFileTool, WriteFileTool
 from agent_from_scratch.tools.register import default_tool_schemas
@@ -149,6 +152,157 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual((settings["backend"], settings["model"], settings["base_url"]),
                          ("chat_api", "some-model", "https://api.test/v1"))
         self.assertNotIn("api_key", json.dumps(settings))
+
+
+class SpendingTests(unittest.TestCase):
+    """About 2100 tokens are reserved per MESSAGES request: its size plus the 2048 reply reserve."""
+
+    def setUp(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name, "budget.json")
+
+    def budget(self, requests: int = 100, tokens: int = 1_000_000) -> ApiBudget:
+        return ApiBudget(self.path, max_requests_per_hour=requests, max_tokens_per_day=tokens)
+
+    def test_every_retry_is_charged_and_the_limit_stops_the_retries(self):
+        server = FakeAPI(failures=3)
+        with self.assertRaises(BudgetExceeded):
+            client(server, budget=self.budget(requests=2)).generate(MESSAGES, {})
+        self.assertEqual(len(server.headers), 2)
+
+    def test_a_restarted_process_sends_nothing_once_the_limit_is_reached(self):
+        client(FakeAPI([reply("Fine.")]), budget=self.budget(requests=1)).generate(MESSAGES, {})
+        server = FakeAPI([reply("never")])
+        with self.assertRaises(BudgetExceeded):
+            client(server, budget=self.budget(requests=1)).generate(MESSAGES, {})
+        self.assertEqual(server.headers, [])
+
+    def test_reported_usage_replaces_the_reservation(self):
+        """Unsettled, the second request would need over 4000; settled, 140 plus its reservation."""
+        model = client(FakeAPI([reply("One."), reply("Two.")]), budget=self.budget(tokens=2400))
+        model.generate(MESSAGES, {})
+        self.assertEqual(model.generate(MESSAGES, {}).content, "Two.")
+
+    def test_the_whole_request_is_reserved_before_it_is_sent(self):
+        long = [{"role": "user", "content": "x" * 30_000}]  # about 10000 tokens
+        server = FakeAPI([reply("never")])
+        with self.assertRaises(BudgetExceeded):
+            client(server, budget=self.budget(tokens=9000)).generate(long, {})
+        self.assertEqual(server.headers, [])
+
+    def test_a_failed_reply_costs_no_tokens(self):
+        for failure in (503, 429):
+            with self.subTest(status=failure):
+                self.path.unlink(missing_ok=True)
+                server = FakeAPI([reply("Fine.")], failures=1, status=failure)
+                model = client(server, budget=self.budget(tokens=2300))
+                self.assertEqual(model.generate(MESSAGES, {}).content, "Fine.")
+
+    def test_a_rejected_request_costs_no_tokens(self):
+        budget = self.budget(tokens=2300)
+        with self.assertRaises(httpx.HTTPStatusError):
+            client(FakeAPI(failures=1, status=401), budget=budget).generate(MESSAGES, {})
+        self.assertEqual(client(FakeAPI([reply("Fine.")]), budget=budget).generate(MESSAGES, {}).content, "Fine.")
+
+    def test_a_timeout_keeps_its_reservation_since_the_model_may_have_run(self):
+        attempts = []
+
+        def timeout(request: httpx.Request) -> httpx.Response:
+            attempts.append(request)
+            raise httpx.ReadTimeout("slow", request=request)
+
+        model = ChatAPIClient("https://api.test/v1", "some-model", backoff=0, transport=httpx.MockTransport(timeout),
+                              budget=self.budget(tokens=2300))
+        with self.assertRaises(BudgetExceeded):
+            model.generate(MESSAGES, {})
+        self.assertEqual(len(attempts), 1)
+
+    def test_a_turn_stops_with_a_model_error_when_the_budget_runs_out(self):
+        server = FakeAPI([reply("Reading.", ("c1", "read_file", {"path": "a.txt"})), reply("never")])
+        with TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / "a.txt").write_text("alpha")
+            agent = Agent(client(server, budget=self.budget(requests=1)),
+                          registry=ToolRegistry([ReadFileTool(workspace)]),
+                          instruction_config=InstructionConfig(workspace=workspace))
+            result = agent.run_turn("Read a.txt.")
+        self.assertEqual(result.stop_reason, RunStopReason.MODEL_ERROR)
+        self.assertIn("BudgetExceeded", result.error_message)
+        self.assertEqual(len(server.headers), 1)
+
+    def test_the_bot_replies_with_the_reason_when_the_budget_is_spent(self):
+        budget = self.budget(requests=1)
+        budget.charge(1)
+        server, telegram = FakeAPI([reply("never")]), Mock()
+        update = {"update_id": 1, "message": {"from": {"id": 7}, "chat": {"id": 7}, "text": "Hello."}}
+        with TemporaryDirectory() as directory:
+            agent = Agent(client(server, budget=budget), directory, registry=ToolRegistry([]),
+                          instruction_config=InstructionConfig(workspace=Path(directory)))
+            handle_update(update, agent=agent, store=SessionStore(Path(directory, "sessions")), client=telegram,
+                          allowed_user_id=7, active_sessions={}, compact_pending={})
+        self.assertEqual(server.headers, [])
+        (chat_id, text), _ = telegram.send_message.call_args
+        self.assertEqual(chat_id, 7)
+        self.assertIn("AGENT_MAX_REQUESTS_PER_HOUR", text)
+
+    def test_a_refused_summary_reports_the_budget_when_the_request_cannot_fit_either(self):
+        """The summary's input fits this window and the whole history does not, so without the
+        summary the turn cannot continue; the reason must still be the budget."""
+        budget = self.budget(requests=1)
+        budget.charge(1)
+        server = FakeAPI([reply("never")])
+        history = []
+        for index in range(6):
+            history += [{"role": "user", "content": f"{index} " + "x" * 6000}, {"role": "assistant", "content": "ok"}]
+        with TemporaryDirectory() as directory:
+            model = client(server, budget=budget, n_ctx=14000)
+            agent = Agent(model, registry=ToolRegistry([]),
+                          instruction_config=InstructionConfig(workspace=Path(directory)))
+            result = agent.run_turn("Continue.", history)
+        self.assertFalse(context_fits(model.measure_context(result.messages, {}), 256))
+        self.assertEqual(result.model_requests[0].purpose, "compact")
+        self.assertEqual(server.headers, [])
+        self.assertEqual(result.stop_reason, RunStopReason.MODEL_ERROR)
+        self.assertIn("AGENT_MAX_REQUESTS_PER_HOUR", format_reply(result))
+
+    def test_a_refused_summary_is_not_attempted_again(self):
+        """A retry at the same cut cannot succeed, and each one would log another refusal."""
+        budget = self.budget(requests=1)
+        budget.charge(1)
+        history = [{"role": "user", "content": "x" * 6000}, {"role": "assistant", "content": "ok"},
+                   {"role": "user", "content": "y" * 6000}, {"role": "assistant", "content": "ok"}]
+        with TemporaryDirectory() as directory:
+            agent = Agent(client(FakeAPI(), budget=budget), registry=ToolRegistry([]),
+                          instruction_config=InstructionConfig(workspace=Path(directory)))
+            result = agent.run_turn("Continue.", history, compact=True)
+        self.assertEqual(sum(request.purpose == "compact" for request in result.model_requests), 1)
+        self.assertEqual(result.stop_reason, RunStopReason.MODEL_ERROR)
+
+    def test_a_remote_api_gets_a_budget_from_the_environment(self):
+        environment = {"AGENT_BASE_URL": "https://api.deepseek.com", "AGENT_MODEL": "deepseek-flash",
+                       "AGENT_BUDGET_FILE": str(self.path), "AGENT_MAX_REQUESTS_PER_HOUR": "1"}
+        with patch.dict("os.environ", environment, clear=True):
+            model = make_model()
+        self.assertEqual(model.budget.path, self.path)
+        model.budget.charge(1)
+        with self.assertRaises(BudgetExceeded):
+            model.budget.charge(1)
+
+    def test_a_remote_api_is_refused_a_token_limit_that_cannot_be_read(self):
+        for variable in ("AGENT_MAX_REQUESTS_PER_HOUR", "AGENT_MAX_TOKENS_PER_DAY"):
+            for value in ("0", "-1", "lots"):
+                environment = {"AGENT_BASE_URL": "https://api.deepseek.com", "AGENT_MODEL": "deepseek-flash",
+                               "AGENT_BUDGET_FILE": str(self.path), variable: value}
+                with self.subTest(variable=variable, value=value), patch.dict("os.environ", environment, clear=True):
+                    with self.assertRaises(ValueError):
+                        make_model()
+
+    def test_a_local_server_costs_nothing_and_has_no_budget(self):
+        for host in ("localhost", "127.0.0.1", "[::1]"):
+            environment = {"AGENT_BASE_URL": f"http://{host}:11434/v1", "AGENT_MODEL": "qwen3:4b"}
+            with self.subTest(host=host), patch.dict("os.environ", environment, clear=True):
+                self.assertIsNone(make_model().budget)
 
 
 class MakeModelTests(unittest.TestCase):
