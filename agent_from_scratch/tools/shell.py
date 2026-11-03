@@ -17,6 +17,11 @@ from typing import Mapping
 from .base import Tool, ToolErrorCode, ToolExecutionError, ToolInterrupted
 
 
+def _holds_paid_key(name: str) -> bool:
+    """A command the model writes must not inherit a key: it could spend past the agent's budget."""
+    return name.endswith("_API_KEY") or name in {"ANTHROPIC_AUTH_TOKEN", "TELEGRAM_BOT_TOKEN"}
+
+
 @dataclass(frozen=True)
 class Command:
     argv: tuple[str, ...]
@@ -88,7 +93,7 @@ class ShellTool(Tool):
                     raise ToolExecutionError(ToolErrorCode.INVALID_ARGUMENTS, "working_dir must be a directory.")
             argv = ("/bin/sh", "-c", command)
             timeout = self.timeout
-            env = os.environ.copy()
+            env = {name: value for name, value in os.environ.items() if not _holds_paid_key(name)}
             # Ensure `python` resolves to the active interpreter even when launched by absolute path.
             env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", os.defpath)
         else:
