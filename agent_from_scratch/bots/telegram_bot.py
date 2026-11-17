@@ -111,10 +111,11 @@ def split_for_telegram(text: str) -> list[str]:
 
     Breaks at a paragraph or line boundary when one fits, else at a space, so a split
     never lands inside a word. A single word longer than the limit alone is hard-cut,
-    since no valid break exists. The breaks themselves are dropped.
+    since no valid break exists. The breaks themselves and whitespace-only chunks
+    are dropped; whitespace inside a non-blank chunk is preserved.
     """
     if len(text) <= MAX_MESSAGE_LENGTH:
-        return [text]
+        return [text] if text.strip() else []
     chunks: list[str] = []
     remaining = text
     while len(remaining) > MAX_MESSAGE_LENGTH:
@@ -127,12 +128,14 @@ def split_for_telegram(text: str) -> list[str]:
                 cut = found
                 break
         if cut == 0:
-            chunks.append(remaining[:MAX_MESSAGE_LENGTH])  # no break: one word over the limit
+            chunk = remaining[:MAX_MESSAGE_LENGTH]  # no break: one word over the limit
             remaining = remaining[MAX_MESSAGE_LENGTH:]
         else:
-            chunks.append(remaining[:cut].rstrip(marker))
+            chunk = remaining[:cut].rstrip(marker)
             remaining = remaining[cut:].lstrip(marker)
-    if remaining:
+        if chunk.strip():
+            chunks.append(chunk)
+    if remaining.strip():
         chunks.append(remaining)
     return chunks
 

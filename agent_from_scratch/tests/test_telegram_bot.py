@@ -221,11 +221,38 @@ class SplitForTelegramTests(unittest.TestCase):
             self.assertLessEqual(len(chunk), MAX_MESSAGE_LENGTH)
         self.assertIn("line 0", chunks[0])
 
-    def test_leading_blank_lines_do_not_produce_empty_chunks(self):
+    def test_blank_lines_between_paragraphs_do_not_produce_empty_chunks(self):
         text = "a" * 4000 + "\n\n\n\n" + "b" * 4000
         chunks = split_for_telegram(text)
         self.assertTrue(all(chunk for chunk in chunks))
         self.assertEqual(len(chunks), 2)
+
+    def test_leading_whitespace_does_not_produce_blank_chunks(self):
+        for prefix in ("\n\n", " " * 20, "\t" * 5000):
+            with self.subTest(prefix=repr(prefix[:20])):
+                chunks = split_for_telegram(prefix + "x" * 5000)
+                self.assertTrue(all(chunk.strip() for chunk in chunks))
+                self.assertEqual("".join(chunks).strip(), "x" * 5000)
+
+    def test_whitespace_only_replies_have_no_chunks(self):
+        for text in ("", " \n\t", "\n" * 5000, "\t" * 5000):
+            with self.subTest(length=len(text)):
+                self.assertEqual(split_for_telegram(text), [])
+
+    def test_whitespace_only_remainder_is_not_sent(self):
+        for suffix in ("\n\n", " " * 20, "\t" * 20):
+            with self.subTest(suffix=repr(suffix)):
+                self.assertEqual(split_for_telegram("x" * MAX_MESSAGE_LENGTH + suffix),
+                                 ["x" * MAX_MESSAGE_LENGTH])
+
+    def test_length_boundaries_preserve_all_non_whitespace_text(self):
+        for symbol in ("x", "中", "😀"):
+            for length in (4095, 4096, 4097):
+                with self.subTest(symbol=symbol, length=length):
+                    text = symbol * length
+                    chunks = split_for_telegram(text)
+                    self.assertEqual("".join(chunks), text)
+                    self.assertTrue(all(0 < len(chunk) <= MAX_MESSAGE_LENGTH for chunk in chunks))
 
 
 def _text_update(chat_id, text, update_id=1, sender_id=99):
