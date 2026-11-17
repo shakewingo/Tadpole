@@ -28,6 +28,7 @@ from ..trace import RunStopReason, TurnResult
 DEFAULT_API_BASE = "https://api.telegram.org"
 LONG_POLL_TIMEOUT = 30
 MAX_MESSAGE_LENGTH = 4096
+MAX_SEND_RETRIES = 3
 SESSION_RESET_COMMANDS = {"/new", "/reset"}
 DEFAULT_STATE_DIR = "./outputs/telegram_sessions"
 # Telegram clears a chat action after about five seconds, or as soon as the bot sends a message.
@@ -57,8 +58,25 @@ class TelegramClient:
         return result
 
     def send_message(self, chat_id: int | str, text: str) -> None:
-        self._payload("sendMessage", self._client.post(f"{self._base}/sendMessage",
-                                                       json={"chat_id": chat_id, "text": text}))
+        """Retry explicit flood-control rejections, without replaying earlier chunks."""
+        for attempt in range(MAX_SEND_RETRIES + 1):
+            response = self._client.post(f"{self._base}/sendMessage",
+                                         json={"chat_id": chat_id, "text": text})
+            try:
+                self._payload("sendMessage", response)
+            except TelegramAPIError:
+                if response.status_code != 429 or attempt == MAX_SEND_RETRIES:
+                    raise
+                try:
+                    retry_after = response.json().get("parameters", {}).get("retry_after")
+                except (ValueError, AttributeError):
+                    retry_after = None
+                if type(retry_after) is not int or retry_after <= 0:
+                    raise
+                logger.warning("sendMessage rate limited; retrying in {} seconds", retry_after)
+                time.sleep(retry_after)
+            else:
+                return
 
     def send_chat_action(self, chat_id: int | str, action: str = "typing") -> None:
         self._payload("sendChatAction", self._client.post(f"{self._base}/sendChatAction",
