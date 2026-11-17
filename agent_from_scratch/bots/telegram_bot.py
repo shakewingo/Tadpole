@@ -28,7 +28,7 @@ from ..trace import RunStopReason, TurnResult
 DEFAULT_API_BASE = "https://api.telegram.org"
 LONG_POLL_TIMEOUT = 30
 MAX_MESSAGE_LENGTH = 4096
-_TRUNCATION_MARKER = "\n… [truncated]"
+MAX_SEND_RETRIES = 3
 SESSION_RESET_COMMANDS = {"/new", "/reset"}
 DEFAULT_STATE_DIR = "./outputs/telegram_sessions"
 # Telegram clears a chat action after about five seconds, or as soon as the bot sends a message.
@@ -58,8 +58,25 @@ class TelegramClient:
         return result
 
     def send_message(self, chat_id: int | str, text: str) -> None:
-        self._payload("sendMessage", self._client.post(f"{self._base}/sendMessage",
-                                                       json={"chat_id": chat_id, "text": text}))
+        """Retry explicit flood-control rejections, without replaying earlier chunks."""
+        for attempt in range(MAX_SEND_RETRIES + 1):
+            response = self._client.post(f"{self._base}/sendMessage",
+                                         json={"chat_id": chat_id, "text": text})
+            try:
+                self._payload("sendMessage", response)
+            except TelegramAPIError:
+                if response.status_code != 429 or attempt == MAX_SEND_RETRIES:
+                    raise
+                try:
+                    retry_after = response.json().get("parameters", {}).get("retry_after")
+                except (ValueError, AttributeError):
+                    retry_after = None
+                if type(retry_after) is not int or retry_after <= 0:
+                    raise
+                logger.warning("sendMessage rate limited; retrying in {} seconds", retry_after)
+                time.sleep(retry_after)
+            else:
+                return
 
     def send_chat_action(self, chat_id: int | str, action: str = "typing") -> None:
         self._payload("sendChatAction", self._client.post(f"{self._base}/sendChatAction",
@@ -107,10 +124,38 @@ def extract_message(update: dict[str, Any]) -> tuple[int | str, str] | None:
     return chat["id"], text
 
 
-def truncate_for_telegram(text: str) -> str:
+def split_for_telegram(text: str) -> list[str]:
+    """Split a reply into chunks Telegram accepts (each <= MAX_MESSAGE_LENGTH).
+
+    Breaks at a paragraph or line boundary when one fits, else at a space, so a split
+    never lands inside a word. A single word longer than the limit alone is hard-cut,
+    since no valid break exists. The breaks themselves and whitespace-only chunks
+    are dropped; whitespace inside a non-blank chunk is preserved.
+    """
     if len(text) <= MAX_MESSAGE_LENGTH:
-        return text
-    return text[: MAX_MESSAGE_LENGTH - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+        return [text] if text.strip() else []
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > MAX_MESSAGE_LENGTH:
+        window = remaining[:MAX_MESSAGE_LENGTH]
+        cut = 0
+        marker = ""
+        for marker in ("\n\n", "\n", " "):
+            found = window.rfind(marker)
+            if found > 0:
+                cut = found
+                break
+        if cut == 0:
+            chunk = remaining[:MAX_MESSAGE_LENGTH]  # no break: one word over the limit
+            remaining = remaining[MAX_MESSAGE_LENGTH:]
+        else:
+            chunk = remaining[:cut].rstrip(marker)
+            remaining = remaining[cut:].lstrip(marker)
+        if chunk.strip():
+            chunks.append(chunk)
+    if remaining.strip():
+        chunks.append(remaining)
+    return chunks
 
 
 def format_reply(result: TurnResult) -> str:
@@ -129,7 +174,7 @@ def format_reply(result: TurnResult) -> str:
                "This turn is not included in replayable session history.")
     else:
         text = f"Stopped: {result.stop_reason}. {result.error_message or ''}"
-    return truncate_for_telegram(text)
+    return text
 
 
 @contextmanager
@@ -243,7 +288,8 @@ def handle_update(update: dict[str, Any], *, agent: Agent, store: SessionStore,
         logger.exception("Turn failed for session {}", session_id)
         client.send_message(chat_id, f"Internal error: {error}")
         return
-    client.send_message(chat_id, format_reply(result))
+    for part in split_for_telegram(format_reply(result)):
+        client.send_message(chat_id, part)
 
 
 @dataclass(frozen=True)

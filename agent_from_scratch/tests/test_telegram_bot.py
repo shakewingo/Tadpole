@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -17,7 +18,7 @@ from agent_from_scratch.bots.telegram_bot import (
     BotConfig, DEFAULT_STATE_DIR, MAX_MESSAGE_LENGTH, SESSION_RESET_COMMANDS, TelegramAPIError,
     TelegramClient, configure_logging, extract_message, format_reply, handle_update, is_allowed,
     load_active_sessions, load_config_from_env, load_offset, poll_loop, process_updates, save_offset,
-    truncate_for_telegram, typing,
+    split_for_telegram, typing,
 )
 from agent_from_scratch.context import InstructionLoadError
 from agent_from_scratch.llm import LLM
@@ -70,6 +71,59 @@ class TelegramClientTests(unittest.TestCase):
         self.client._client.post.return_value = response
         with self.assertRaises(TelegramAPIError):
             self.client.send_message(42, "hello")
+
+    def test_send_message_retries_429_after_the_requested_delay(self):
+        request = httpx.Request("POST", "https://api.telegram.org/bottest-token/sendMessage")
+        self.client._client.post.side_effect = [
+            httpx.Response(429, json={"ok": False, "parameters": {"retry_after": 2}},
+                           request=request),
+            httpx.Response(200, json={"ok": True, "result": {}}, request=request),
+        ]
+        with patch("agent_from_scratch.bots.telegram_bot.time.sleep") as sleep_mock:
+            self.client.send_message(42, "hello")
+        sleep_mock.assert_called_once_with(2)
+        self.assertEqual(self.client._client.post.call_count, 2)
+        first, retry = self.client._client.post.call_args_list
+        self.assertEqual(first, retry)
+
+    def test_repeated_rate_limits_have_a_bounded_retry_budget(self):
+        request = httpx.Request("POST", "https://api.telegram.org/bottest-token/sendMessage")
+        self.client._client.post.return_value = httpx.Response(
+            429, json={"ok": False, "parameters": {"retry_after": 1}}, request=request)
+        with patch("agent_from_scratch.bots.telegram_bot.time.sleep") as sleep_mock:
+            with self.assertRaises(TelegramAPIError):
+                self.client.send_message(42, "hello")
+        self.assertEqual(self.client._client.post.call_count, 4)
+        self.assertEqual(sleep_mock.call_count, 3)
+
+    def test_rate_limits_without_a_valid_retry_after_are_not_retried(self):
+        request = httpx.Request("POST", "https://api.telegram.org/bottest-token/sendMessage")
+        for delay in (None, "2", -1, 0, True):
+            with self.subTest(delay=delay):
+                self.client._client.post.reset_mock()
+                self.client._client.post.return_value = httpx.Response(
+                    429, json={"ok": False, "parameters": {"retry_after": delay}},
+                    request=request)
+                with patch("agent_from_scratch.bots.telegram_bot.time.sleep") as sleep_mock:
+                    with self.assertRaises(TelegramAPIError):
+                        self.client.send_message(42, "hello")
+                self.client._client.post.assert_called_once()
+                sleep_mock.assert_not_called()
+
+    def test_other_http_errors_are_not_retried_or_leaked(self):
+        request = httpx.Request("POST", "https://api.telegram.org/bottest-token/sendMessage")
+        for status_code in (400, 401, 403, 500):
+            with self.subTest(status_code=status_code):
+                self.client._client.post.reset_mock()
+                self.client._client.post.return_value = httpx.Response(
+                    status_code, json={"ok": False, "description": "failed",
+                                       "parameters": {"retry_after": 1}}, request=request)
+                with patch("agent_from_scratch.bots.telegram_bot.time.sleep") as sleep_mock:
+                    with self.assertRaises(TelegramAPIError) as caught:
+                        self.client.send_message(42, "hello")
+                self.client._client.post.assert_called_once()
+                sleep_mock.assert_not_called()
+                self.assertNotIn("test-token", str(caught.exception))
 
     def test_an_http_error_names_telegrams_reason_but_never_the_token(self):
         request = httpx.Request("GET", "https://api.telegram.org/bottest-token/getUpdates")
@@ -185,20 +239,74 @@ class FormatReplyTests(unittest.TestCase):
         result = _result(RunStopReason.TOOL_LIMIT, error_message="cap hit")
         self.assertEqual(format_reply(result), "Stopped: tool_limit. cap hit")
 
-    def test_long_reply_is_truncated(self):
-        result = _result(RunStopReason.FINAL_RESPONSE, final_answer="x" * 5000)
-        reply = format_reply(result)
-        self.assertLessEqual(len(reply), MAX_MESSAGE_LENGTH)
-        self.assertTrue(reply.endswith("[truncated]"))
+    def test_long_reply_is_not_truncated_anymore(self):
+        answer = "x" * 5000
+        result = _result(RunStopReason.FINAL_RESPONSE, final_answer=answer)
+        self.assertEqual(format_reply(result), answer)
 
 
-class TruncateForTelegramTests(unittest.TestCase):
-    def test_short_text_is_unchanged(self):
-        self.assertEqual(truncate_for_telegram("hi"), "hi")
+class SplitForTelegramTests(unittest.TestCase):
+    def test_short_text_is_one_chunk_unchanged(self):
+        self.assertEqual(split_for_telegram("hi"), ["hi"])
 
-    def test_long_text_is_cut_to_the_limit(self):
-        truncated = truncate_for_telegram("x" * 5000)
-        self.assertEqual(len(truncated), MAX_MESSAGE_LENGTH)
+    def test_splits_at_a_paragraph_break(self):
+        text = "a" * 3000 + "\n\n" + "b" * 3000
+        self.assertEqual(split_for_telegram(text), ["a" * 3000, "b" * 3000])
+
+    def test_splits_at_a_line_break_when_no_paragraph_fits(self):
+        text = "a" * 4000 + "\n" + "b" * 4000
+        self.assertEqual(split_for_telegram(text), ["a" * 4000, "b" * 4000])
+
+    def test_splits_at_a_space_rather_than_inside_a_word(self):
+        text = "a" * 4000 + " " + "b" * 4000
+        self.assertEqual(split_for_telegram(text), ["a" * 4000, "b" * 4000])
+
+    def test_hard_cuts_a_single_word_over_the_limit(self):
+        text = "x" * 5000
+        chunks = split_for_telegram(text)
+        self.assertEqual("".join(chunks), text)
+        self.assertEqual(len(chunks), 2)
+
+    def test_every_chunk_respects_the_limit(self):
+        text = "\n".join(f"line {i} " + "w" * 100 for i in range(80))
+        chunks = split_for_telegram(text)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), MAX_MESSAGE_LENGTH)
+        self.assertIn("line 0", chunks[0])
+
+    def test_blank_lines_between_paragraphs_do_not_produce_empty_chunks(self):
+        text = "a" * 4000 + "\n\n\n\n" + "b" * 4000
+        chunks = split_for_telegram(text)
+        self.assertTrue(all(chunk for chunk in chunks))
+        self.assertEqual(len(chunks), 2)
+
+    def test_leading_whitespace_does_not_produce_blank_chunks(self):
+        for prefix in ("\n\n", " " * 20, "\t" * 5000):
+            with self.subTest(prefix=repr(prefix[:20])):
+                chunks = split_for_telegram(prefix + "x" * 5000)
+                self.assertTrue(all(chunk.strip() for chunk in chunks))
+                self.assertEqual("".join(chunks).strip(), "x" * 5000)
+
+    def test_whitespace_only_replies_have_no_chunks(self):
+        for text in ("", " \n\t", "\n" * 5000, "\t" * 5000):
+            with self.subTest(length=len(text)):
+                self.assertEqual(split_for_telegram(text), [])
+
+    def test_whitespace_only_remainder_is_not_sent(self):
+        for suffix in ("\n\n", " " * 20, "\t" * 20):
+            with self.subTest(suffix=repr(suffix)):
+                self.assertEqual(split_for_telegram("x" * MAX_MESSAGE_LENGTH + suffix),
+                                 ["x" * MAX_MESSAGE_LENGTH])
+
+    def test_length_boundaries_preserve_all_non_whitespace_text(self):
+        for symbol in ("x", "中", "😀"):
+            for length in (4095, 4096, 4097):
+                with self.subTest(symbol=symbol, length=length):
+                    text = symbol * length
+                    chunks = split_for_telegram(text)
+                    self.assertEqual("".join(chunks), text)
+                    self.assertTrue(all(0 < len(chunk) <= MAX_MESSAGE_LENGTH for chunk in chunks))
 
 
 def _text_update(chat_id, text, update_id=1, sender_id=99):
@@ -260,6 +368,48 @@ class HandleUpdateTests(unittest.TestCase):
         self.assertEqual(kwargs["session_id"], "1")
         self.assertFalse(kwargs["compact"])
         self.client.send_message.assert_called_once_with(1, "42")
+
+    def test_a_long_reply_is_sent_as_several_messages(self):
+        answer = "word " * 2000  # 10,000 characters
+        self.agent.run_turn = Mock(return_value=TurnResult(
+            messages=[], stop_reason=RunStopReason.FINAL_RESPONSE, final_answer=answer))
+        self._handle(_text_update(1, "write a long essay"))
+        parts = [call.args[1] for call in self.client.send_message.call_args_list]
+        self.assertGreater(len(parts), 1)
+        for part in parts:
+            self.assertLessEqual(len(part), MAX_MESSAGE_LENGTH)
+        self.assertEqual(" ".join(part.strip() for part in parts), answer.strip())
+
+    def test_rate_limited_part_is_retried_without_rerunning_the_turn(self):
+        answer = "x" * 10000
+        parts = split_for_telegram(answer)
+        self.agent.run_turn = Mock(return_value=TurnResult(
+            messages=[], stop_reason=RunStopReason.FINAL_RESPONSE, final_answer=answer))
+        attempts, delivered = [], []
+
+        def transport(request):
+            if request.url.path.endswith("/sendChatAction"):
+                return httpx.Response(200, json={"ok": True, "result": True})
+            text = json.loads(request.content)["text"]
+            attempts.append(text)
+            if len(attempts) == 2:
+                return httpx.Response(429, json={
+                    "ok": False, "description": "Too Many Requests",
+                    "parameters": {"retry_after": 2}})
+            delivered.append(text)
+            return httpx.Response(200, json={"ok": True, "result": {}})
+
+        self.client = TelegramClient("test-token")
+        self.client._client.close()
+        self.client._client = httpx.Client(transport=httpx.MockTransport(transport))
+        self.addCleanup(self.client.close)
+        with patch("agent_from_scratch.bots.telegram_bot.time.sleep") as sleep_mock:
+            self._handle(_text_update(1, "write a long essay"))
+        sleep_mock.assert_called_once_with(2)
+        self.agent.run_turn.assert_called_once()
+        self.assertEqual(delivered, parts)
+        self.assertEqual(attempts, [parts[0], parts[1], parts[1], *parts[2:]])
+        self.assertEqual("".join(delivered), answer)
 
     def test_shows_typing_while_the_turn_runs(self):
         def turn(*args, **kwargs):
