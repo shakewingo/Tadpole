@@ -15,10 +15,10 @@ from loguru import logger
 
 from agent_from_scratch.agent import Agent
 from agent_from_scratch.bots.telegram_bot import (
-    BotConfig, DEFAULT_STATE_DIR, MAX_MESSAGE_LENGTH, SESSION_RESET_COMMANDS, TelegramAPIError,
-    TelegramClient, configure_logging, extract_message, format_reply, handle_update, is_allowed,
-    load_active_sessions, load_config_from_env, load_offset, poll_loop, process_updates, save_offset,
-    split_for_telegram, typing,
+    BotConfig, DEFAULT_STATE_DIR, MAX_MESSAGE_LENGTH, SESSION_RESET_COMMANDS, TEXT_ONLY_REPLY,
+    TelegramAPIError, TelegramClient, configure_logging, extract_message, format_reply,
+    handle_update, is_allowed, load_active_sessions, load_config_from_env, load_offset, poll_loop,
+    process_updates, save_offset, split_for_telegram, typing,
 )
 from agent_from_scratch.context import InstructionLoadError
 from agent_from_scratch.llm import LLM
@@ -204,6 +204,23 @@ class ExtractMessageTests(unittest.TestCase):
         update = {"message": {"chat": {"id": 7}, "sticker": {}}}
         self.assertIsNone(extract_message(update))
 
+    def test_uses_caption_when_there_is_no_text(self):
+        update = {"message": {"chat": {"id": 7}, "photo": [{}], "caption": "what is this?"}}
+        self.assertEqual(extract_message(update), (7, "what is this?"))
+
+    def test_returns_none_for_photo_without_caption(self):
+        update = {"message": {"chat": {"id": 7}, "photo": [{}]}}
+        self.assertIsNone(extract_message(update))
+
+    def test_returns_none_for_blank_caption(self):
+        update = {"message": {"chat": {"id": 7}, "photo": [{}], "caption": "   "}}
+        self.assertIsNone(extract_message(update))
+
+    def test_text_wins_over_caption(self):
+        update = {"message": {"chat": {"id": 7}, "text": "hello",
+                              "photo": [{}], "caption": "ignored"}}
+        self.assertEqual(extract_message(update), (7, "hello"))
+
     def test_returns_none_for_blank_text(self):
         update = {"message": {"chat": {"id": 7}, "text": "   "}}
         self.assertIsNone(extract_message(update))
@@ -356,6 +373,36 @@ class HandleUpdateTests(unittest.TestCase):
 
     def test_ignores_sender_outside_allowlist(self):
         self._handle(_text_update(1, "hello", sender_id=1))
+        self.client.send_message.assert_not_called()
+
+    def test_non_text_message_gets_a_short_reply_and_no_turn(self):
+        self.agent.run_turn = Mock(return_value=TurnResult(
+            messages=[], stop_reason=RunStopReason.FINAL_RESPONSE, final_answer="ok"))
+        for kind in ("photo", "document", "voice", "sticker"):
+            with self.subTest(kind=kind):
+                self.client.reset_mock()
+                self._handle({"update_id": 1, "message": {"chat": {"id": 1},
+                             "from": {"id": 99}, kind: {}}})
+                self.client.send_message.assert_called_once_with(1, TEXT_ONLY_REPLY)
+        self.agent.run_turn.assert_not_called()
+
+    def test_caption_is_run_as_a_turn(self):
+        self.agent.run_turn = Mock(return_value=TurnResult(
+            messages=[], stop_reason=RunStopReason.FINAL_RESPONSE, final_answer="42"))
+        self._handle({"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 99},
+                                               "photo": [{}], "caption": "what is this?"}})
+        self.agent.run_turn.assert_called_once()
+        self.assertEqual(self.agent.run_turn.call_args.args[0], "what is this?")
+        self.client.send_message.assert_called_once_with(1, "42")
+
+    def test_non_text_message_from_disallowed_sender_is_ignored(self):
+        self._handle({"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 1},
+                                               "photo": [{}]}})
+        self.client.send_message.assert_not_called()
+
+    def test_edited_message_without_text_is_ignored(self):
+        self._handle({"update_id": 1, "edited_message": {"chat": {"id": 1},
+                     "from": {"id": 99}, "photo": [{}]}})
         self.client.send_message.assert_not_called()
 
     def test_runs_a_turn_and_sends_final_answer(self):
