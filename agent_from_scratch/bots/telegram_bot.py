@@ -117,11 +117,22 @@ def extract_message(update: dict[str, Any]) -> tuple[int | str, str] | None:
         return None
     chat = message.get("chat")
     text = message.get("text")
+    if not isinstance(text, str) or not text.strip():
+        # A photo, file or voice note can carry a caption; treat it as the message text.
+        caption = message.get("caption")
+        text = caption if isinstance(caption, str) else None
     if not isinstance(chat, dict) or "id" not in chat:
         return None
     if not isinstance(text, str) or not text.strip():
         return None
     return chat["id"], text
+
+
+# Message kinds that carry no usable text: the bot answers these with a short note
+# instead of dropping them silently (see extract_message for the caption fallback).
+NON_TEXT_MESSAGE_KEYS = ("animation", "audio", "document", "photo", "sticker",
+                         "video", "video_note", "voice")
+TEXT_ONLY_REPLY = "I only understand text messages for now — please send your question as text."
 
 
 def split_for_telegram(text: str) -> list[str]:
@@ -244,6 +255,11 @@ def handle_update(update: dict[str, Any], *, agent: Agent, store: SessionStore,
         return
     parsed = extract_message(update)
     if parsed is None:
+        message = update.get("message")
+        if (isinstance(message, dict) and isinstance(message.get("chat"), dict)
+                and "id" in message["chat"]
+                and any(key in message for key in NON_TEXT_MESSAGE_KEYS)):
+            client.send_message(message["chat"]["id"], TEXT_ONLY_REPLY)
         return
     chat_id, text = parsed
     session_id = active_sessions.setdefault(chat_id, str(chat_id))
