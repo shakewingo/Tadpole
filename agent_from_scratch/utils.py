@@ -73,7 +73,13 @@ def _next_tool_tag(content: str, start: int = 0) -> re.Match[str] | None:
 
 
 def extract_qwen_tool_calls(content: str) -> tuple[list[dict[str, Any]], str]:
-    """Extract ordered unquoted calls; decode JSON before looking for closing tags."""
+    """Extract ordered unquoted calls; decode JSON before looking for closing tags.
+
+    The narration keeps the text before and between calls, but not the text
+    after the last call: the model can invent observations there (a tool
+    result that never happened), and keeping it would send it back as
+    history on every later turn. With no calls the whole reply is narration.
+    """
     calls, narration, cursor = [], [], 0
     opening = _next_tool_tag(content)
     while opening is not None:
@@ -99,7 +105,8 @@ def extract_qwen_tool_calls(content: str) -> tuple[list[dict[str, Any]], str]:
         narration.append(content[cursor:opening.start()])
         cursor = end + len("</tool_call>")
         opening = _next_tool_tag(content, cursor)
-    narration.append(content[cursor:])
+    if not calls:
+        narration.append(content[cursor:])
     return calls, "".join(narration).strip()
 
 
