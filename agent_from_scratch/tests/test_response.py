@@ -126,10 +126,33 @@ class ResponseTests(unittest.TestCase):
                 result = self.parse(before + block + after)
                 self.assertEqual(result.type, "tool_call")
                 self.assertEqual((result.tool_calls[0].name, result.tool_calls[0].arguments), ("edit_file", payload["arguments"]))
-                self.assertEqual(result.content, (before + after).strip())
+                # Text after the last call is dropped, so it cannot come back
+                # as history (see test_text_after_last_tool_call_is_dropped).
+                self.assertEqual(result.content, before.strip())
                 message = result.to_message()
                 self.assertEqual(len(message.get("tool_calls", [])), 1)
                 self.assertEqual(json.loads(message.get("tool_calls", [])[0]["function"]["arguments"]), payload["arguments"])
+
+    def test_text_after_last_tool_call_is_dropped(self):
+        # The incident in #1: text after the last call invented a read_file
+        # result that never happened, and history kept sending it back.
+        function = {"name": "read_file", "arguments": {"path": "a.txt"}}
+        block = "<tool_call>" + json.dumps(function) + "</tool_call>"
+        result = self.parse("Reading the file.\n" + block
+                            + "\nThe file contains 'hello'.")
+        self.assertEqual(result.type, "tool_call")
+        self.assertEqual(result.tool_calls[0].arguments, {"path": "a.txt"})
+        self.assertEqual(result.content, "Reading the file.")
+        # The message that goes into history carries the same short content.
+        self.assertEqual(result.to_message().get("content"), "Reading the file.")
+        # Text between calls is kept; only the trailing text is dropped.
+        functions = [{"name": "read_file", "arguments": {"path": name}} for name in ("a.txt", "b.txt")]
+        blocks = ["<tool_call>" + json.dumps(f) + "</tool_call>" for f in functions]
+        result = self.parse("First: " + blocks[0] + "\nThen: " + blocks[1]
+                            + "\nDone, the result was 'hello'.")
+        self.assertEqual(result.content, "First: \nThen:")
+        # With no calls at all the whole reply stays the narration.
+        self.assertEqual(self.parse("Just a plain answer.").content, "Just a plain answer.")
 
     def test_mixed_call_preserves_tags_and_quotes_inside_json_arguments(self):
         arguments = {"path": "example.md", "content":
@@ -138,7 +161,8 @@ class ResponseTests(unittest.TestCase):
             block = "<tool_call>" + json.dumps({"name": "write_file", "arguments": encoded}) + "</tool_call>"
             result = self.parse("Writing the example.\n" + block + "\nChecking next.")
             self.assertEqual(result.tool_calls[0].arguments, arguments)
-            self.assertEqual(result.content, "Writing the example.\n\nChecking next.")
+            # "Checking next." follows the last call, so it is dropped.
+            self.assertEqual(result.content, "Writing the example.")
 
     def test_quoted_examples_do_not_hide_a_separate_action(self):
         block = '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>'
@@ -147,7 +171,9 @@ class ResponseTests(unittest.TestCase):
                 result = self.parse(example + "\nNow reading.\n" + block + "\n" + example)
                 self.assertEqual(result.type, "tool_call")
                 self.assertEqual(result.tool_calls[0].arguments, {"path": "a.txt"})
-                self.assertEqual(result.content.count(block), 2)
+                # The leading quoted example stays; the trailing one follows
+                # the last call, so it is dropped from the narration.
+                self.assertEqual(result.content.count(block), 1)
 
     def test_malformed_mixed_calls_are_errors(self):
         block = '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>'
