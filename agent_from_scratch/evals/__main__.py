@@ -3,9 +3,9 @@
 Commands:
   bench     generated benchmark: --split train (320 tasks), val (64) or test (140, needs --final)
   pressure  9-file tasks that push the window past the elision and summary triggers (real model)
-  freeze    write/update the Stage 8 benchmark's frozen manifest (no model)
+  freeze    rewrite the Stage 8 reference manifest the tests check against   (no model)
   aggregate combine k sampled bench runs into pass@1 / pass^k / pass@k      (no model)
-  dataset   generate train/test fixtures and their manifest; --check runs scripted gates (no model)
+  dataset   generate train/test fixtures and the session's freeze; --check runs scripted gates (no model)
   export    turn verifier-passed train rollouts into Stage 9 SFT examples     (no model)
   public    turn rows of a public tool-use dataset into SFT examples           (no model)
   mix       combine our SFT examples with public ones into one training set   (no model)

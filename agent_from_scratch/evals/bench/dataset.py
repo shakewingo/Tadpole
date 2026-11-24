@@ -1,7 +1,9 @@
 """Generate Stage 9 fixtures and optional scripted gates, without loading a model.
 
 Usage: python -m agent_from_scratch.evals dataset --output DIR [--split train|test|all] [--check]
+                                                  [--against EARLIER_MANIFEST]
 Contracts live outside each workspace; only workspace files and Task.prompt reach the agent.
+DIR/manifest.json is the freeze that `bench --final --manifest` runs are checked against.
 """
 
 import argparse
@@ -13,7 +15,7 @@ import random
 
 from loguru import logger
 
-from .manifest import build_manifest
+from .manifest import build_manifest, task_drift
 from .run import run_case, specs
 from .skeletons import answer
 from ..run import save
@@ -41,7 +43,9 @@ class ScriptedModel:
     read_usage = staticmethod(LLM.read_usage)
 
 
-def generate(out: Path, split: str = "all", check: bool = False) -> dict:
+def generate(out: Path, split: str = "all", check: bool = False, against: dict | None = None) -> dict:
+    """Write the fixtures and their freeze. `against`, an earlier freeze, must have the same test
+    tasks, or nothing is written."""
     out = out.resolve()
     package = Path(__file__).resolve().parents[2]
     if out.is_relative_to(package):
@@ -52,8 +56,14 @@ def generate(out: Path, split: str = "all", check: bool = False) -> dict:
                and (split == "all" or ctx.split == split)]
     if not entries:
         raise ValueError("No tasks selected.")
+    manifest = build_manifest()
+    if against is not None:
+        changed = task_drift(manifest, against)
+        if changed:
+            shown = ", ".join(changed[:10]) + (f" and {len(changed) - 10} more" if len(changed) > 10 else "")
+            raise ValueError(f"Test tasks differ from the earlier freeze: {shown}.")
     out.mkdir(parents=True)
-    save(out / "manifest.json", build_manifest())
+    save(out / "manifest.json", manifest)
     counts = dict(Counter(ctx.split for _, ctx in entries))
     save(out / "metadata.json", {"dataset_version": "stage9-v3", "task_counts": counts,
                                  "skeletons": sorted({s.name for s, _ in entries}),
@@ -92,10 +102,16 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--split", choices=("train", "test", "all"), default="all")
     parser.add_argument("--check", action="store_true", help="Run correct and deliberately failing scripted fixtures")
+    parser.add_argument("--against", type=Path,
+                        help="An earlier freeze whose test tasks this one must match exactly")
     args = parser.parse_args()
     logger.remove()
     try:
-        summary = generate(args.output, args.split, args.check)
+        against = json.loads(args.against.read_text()) if args.against is not None else None
+    except (OSError, ValueError) as error:
+        parser.error(f"Cannot read --against: {error}")
+    try:
+        summary = generate(args.output, args.split, args.check, against)
     except ValueError as error:
         parser.error(str(error))
     print(json.dumps(summary, indent=2))

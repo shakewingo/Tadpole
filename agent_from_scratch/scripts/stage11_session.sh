@@ -45,19 +45,10 @@ if ! finished freeze; then
     # The freeze hashes the working tree's sources, so it must be the committed tree (F4).
     dry || { changes=$(git status --porcelain --untracked-files=no) && [ -z "$changes" ]; } \
         || { echo "Uncommitted changes, or git failed; freeze from a clean clone" >&2; exit 2; }
-    run_logged "$LOGS/dataset.log" python -m agent_from_scratch.evals dataset --output "$DATA" --check
+    # --against stops before writing anything if the test tasks differ from Stage 9's freeze.
+    run_logged "$LOGS/dataset.log" python -m agent_from_scratch.evals dataset --output "$DATA" --check \
+        --against "${STAGE9_MANIFEST:?Stage 9 freeze}"
     dry || grep -q '"gates_passed": true' "$DATA/summary.json"
-    dry || python - "$MANIFEST" "${STAGE9_MANIFEST:?Stage 9 freeze}" <<'EOF'
-import json, sys
-FIELDS = ("prompt_sha256", "expect_sha256", "fault_sha256", "tools_sha256", "workspace_sha256")
-new, old = (json.load(open(path)) for path in sys.argv[1:3])
-test = lambda m: {t["id"]: tuple(t[f] for f in FIELDS) for t in m["tasks"] if t["split"] == "test"}
-a, b = test(new), test(old)
-if a != b:
-    sys.exit(f"Test tasks differ from Stage 9's freeze: {sorted(set(a) ^ set(b)) or [i for i in a if a[i] != b.get(i)]}")
-print(f"{len(a)} test tasks match Stage 9's freeze;",
-      sum(t["split"] == "hardtest" for t in new["tasks"]), "hard-test tasks frozen")
-EOF
     finish freeze "$MANIFEST" "$DATA/summary.json" "$DATA/metadata.json"
 fi
 
