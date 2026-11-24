@@ -193,11 +193,18 @@ class ContextState:
         # The plan lives outside raw: one fresh copy per request, so it never accumulates
         # and never needs summarizing.
         if self.plan is not None:
-            current = [*current, {"role": "system", "content": (
-                "[Current plan; update it with update_plan as you progress]\n" + self.plan
-                if self.plan else
-                "[Planning] You have not created a plan yet. Unless this is a single trivial "
-                "step or a purely informational request, call update_plan first.")}]
+            # Once every plan item is completed there is nothing left to
+            # drive, so stop re-adding the reminder: in an early bot run it
+            # made the model restate its whole answer beside an update_plan
+            # call (issue #2). A plan with no items yet keeps the nudge.
+            all_done = bool(self.plan) and all(
+                line.startswith("[completed]") for line in self.plan.splitlines())
+            if not all_done:
+                current = [*current, {"role": "system", "content": (
+                    "[Current plan; update it with update_plan as you progress]\n" + self.plan
+                    if self.plan else
+                    "[Planning] You have not created a plan yet. Unless this is a single trivial "
+                    "step or a purely informational request, call update_plan first.")}]
         return build_messages(instructions=rules, history=history, current_turn=current)
 
     def compact_boundary(self) -> int:

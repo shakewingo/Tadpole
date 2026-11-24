@@ -42,6 +42,17 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(len(state.messages()), 3)
         self.assertEqual(state.raw, raw)
 
+    def test_fully_completed_plan_adds_no_reminder(self):
+        raw = [{"role": "system", "content": "rules"}, {"role": "user", "content": "go"}]
+        state = ContextState(list(raw), turn_start=1, last_sent=1)
+        state.plan = "[completed] Read config\n[completed] Report"
+        self.assertEqual(state.messages(), raw)
+        state.plan = "[completed] Read config\n[pending] Report"
+        self.assertIn("[Current plan", state.messages()[-1]["content"])
+        self.assertIn("[pending] Report", state.messages()[-1]["content"])
+        state.plan = "[in_progress] Read config\n[completed] Report"
+        self.assertIn("[Current plan", state.messages()[-1]["content"])
+
 
 class PlanTurnTests(unittest.TestCase):
     """Own copy of the TurnTests fixture; subclassing would rerun every inherited test here."""
