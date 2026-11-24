@@ -118,9 +118,14 @@ def extract_message(update: dict[str, Any]) -> tuple[int | str, str] | None:
     chat = message.get("chat")
     text = message.get("text")
     if not isinstance(text, str) or not text.strip():
-        # A photo, file or voice note can carry a caption; treat it as the message text.
+        # A photo, file or voice note can carry a caption. The turn gets the caption behind a
+        # note naming the attachment, so the model does not answer as if it had seen it, and a
+        # caption such as "/new" is never taken for a command.
         caption = message.get("caption")
-        text = caption if isinstance(caption, str) else None
+        text = None
+        if isinstance(caption, str) and caption.strip():
+            key = next((key for key in NON_TEXT_MESSAGE_KEYS if key in message), "attachment")
+            text = ATTACHMENT_NOTE.format(kind=key.replace("_", " ")) + "\n" + caption
     if not isinstance(chat, dict) or "id" not in chat:
         return None
     if not isinstance(text, str) or not text.strip():
@@ -133,6 +138,9 @@ def extract_message(update: dict[str, Any]) -> tuple[int | str, str] | None:
 NON_TEXT_MESSAGE_KEYS = ("animation", "audio", "document", "photo", "sticker",
                          "video", "video_note", "voice")
 TEXT_ONLY_REPLY = "I only understand text messages for now — please send your question as text."
+# Put in front of a caption so the model knows an attachment came with it that it cannot see.
+ATTACHMENT_NOTE = ("[The user sent a {kind} with the caption below. "
+                   "You cannot see the {kind} itself, only the caption.]")
 
 
 def split_for_telegram(text: str) -> list[str]:
