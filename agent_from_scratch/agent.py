@@ -340,7 +340,7 @@ class Agent:
                         # A harness component, not a workspace action: never the registry's.
                         tool_result = planner.invoke(call.arguments, call.call_id)
                         if tool_result.ok:
-                            state.plan = planner.render()
+                            state.plan, state.plan_done = planner.render(), planner.done
                     else:
                         tool_result = self.execute_tool(call.name, call.arguments, call.call_id)
                     if tool_result.ok:

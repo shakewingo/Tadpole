@@ -174,7 +174,8 @@ class Compactor:
             candidate = ContextState(raw=state.raw, turn_start=state.turn_start,
                                      last_sent=state.last_sent, covered=boundary,
                                      summary=summary, instructions=instructions,
-                                     elided=state.elided, plan=state.plan)
+                                     elided=state.elided, plan=state.plan,
+                                     plan_done=state.plan_done)
             # Nothing touched by choosing the cut or summarizing feeds messages(), so a measurement
             # the caller took of this same view still describes it exactly.
             if before is None:

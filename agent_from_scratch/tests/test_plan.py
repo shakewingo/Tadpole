@@ -42,6 +42,31 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(len(state.messages()), 3)
         self.assertEqual(state.raw, raw)
 
+    def test_tool_is_done_only_when_every_item_is_completed(self):
+        tool = PlanTool()
+        self.assertFalse(tool.done)
+        for statuses, done in [(["completed", "completed"], True),
+                               (["completed", "pending"], False),
+                               (["in_progress", "completed"], False)]:
+            tool.invoke({"plan": [{"content": f"task {i}", "status": s}
+                                  for i, s in enumerate(statuses)]})
+            self.assertEqual(tool.done, done, statuses)
+        tool.invoke({"plan": [{"content": "Read config\nthen report", "status": "completed"}]})
+        self.assertTrue(tool.done)
+
+    def test_completed_plan_drops_the_reminder(self):
+        raw = [{"role": "system", "content": "rules"}, {"role": "user", "content": "go"}]
+        state = ContextState(list(raw), turn_start=1, last_sent=1,
+                             plan="[completed] Read config\n[completed] Report", plan_done=True)
+        self.assertEqual(state.messages(), raw)
+
+    def test_plan_with_remaining_items_keeps_the_reminder(self):
+        raw = [{"role": "system", "content": "rules"}, {"role": "user", "content": "go"}]
+        state = ContextState(list(raw), turn_start=1, last_sent=1,
+                             plan="[completed] Read config\n[pending] Report")
+        self.assertIn("[Current plan", state.messages()[-1]["content"])
+        self.assertIn("[pending] Report", state.messages()[-1]["content"])
+
 
 class PlanTurnTests(unittest.TestCase):
     """Own copy of the TurnTests fixture; subclassing would rerun every inherited test here."""

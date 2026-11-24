@@ -144,6 +144,7 @@ class ContextState:
     # View-only stubs for bulky tool outputs, keyed by raw index; raw keeps the originals.
     elided: dict[int, ChatCompletionRequestMessage] = field(default_factory=dict)
     plan: str | None = None  # None: planning off; "": no plan yet
+    plan_done: bool = False  # every plan item is completed
 
     def view(self, start: int, end: int | None = None) -> list[ChatCompletionRequestMessage]:
         """Return raw[start:end] as the actor sees it, with elided outputs replaced by stubs."""
@@ -192,12 +193,14 @@ class ContextState:
         rules = self.raw[:1] if self.instructions is None else [self.instructions]
         # The plan lives outside raw: one fresh copy per request, so it never accumulates
         # and never needs summarizing.
-        if self.plan is not None:
-            current = [*current, {"role": "system", "content": (
-                "[Current plan; update it with update_plan as you progress]\n" + self.plan
-                if self.plan else
+        # A fully completed plan gets no reminder: nothing is left to drive (issue #2).
+        if self.plan == "":
+            current = [*current, {"role": "system", "content":
                 "[Planning] You have not created a plan yet. Unless this is a single trivial "
-                "step or a purely informational request, call update_plan first.")}]
+                "step or a purely informational request, call update_plan first."}]
+        elif self.plan and not self.plan_done:
+            current = [*current, {"role": "system", "content":
+                "[Current plan; update it with update_plan as you progress]\n" + self.plan}]
         return build_messages(instructions=rules, history=history, current_turn=current)
 
     def compact_boundary(self) -> int:
