@@ -15,7 +15,8 @@ from loguru import logger
 
 from agent_from_scratch.agent import Agent
 from agent_from_scratch.bots.telegram_bot import (
-    BotConfig, DEFAULT_STATE_DIR, MAX_MESSAGE_LENGTH, SESSION_RESET_COMMANDS, TEXT_ONLY_REPLY,
+    ATTACHMENT_NOTE, BotConfig, DEFAULT_STATE_DIR, MAX_MESSAGE_LENGTH, SESSION_RESET_COMMANDS,
+    TEXT_ONLY_REPLY,
     TelegramAPIError, TelegramClient, configure_logging, extract_message, format_reply,
     handle_update, is_allowed, load_active_sessions, load_config_from_env, load_offset, poll_loop,
     process_updates, save_offset, split_for_telegram, typing,
@@ -204,9 +205,17 @@ class ExtractMessageTests(unittest.TestCase):
         update = {"message": {"chat": {"id": 7}, "sticker": {}}}
         self.assertIsNone(extract_message(update))
 
-    def test_uses_caption_when_there_is_no_text(self):
+    def test_caption_comes_with_a_note_that_the_attachment_is_unseen(self):
         update = {"message": {"chat": {"id": 7}, "photo": [{}], "caption": "what is this?"}}
-        self.assertEqual(extract_message(update), (7, "what is this?"))
+        self.assertEqual(extract_message(update),
+                         (7, ATTACHMENT_NOTE.format(kind="photo") + "\nwhat is this?"))
+
+    def test_attachment_note_names_the_attachment_kind(self):
+        for key, kind in (("document", "document"), ("video_note", "video note")):
+            with self.subTest(key=key):
+                update = {"message": {"chat": {"id": 7}, key: {}, "caption": "see this"}}
+                self.assertEqual(extract_message(update),
+                                 (7, ATTACHMENT_NOTE.format(kind=kind) + "\nsee this"))
 
     def test_returns_none_for_photo_without_caption(self):
         update = {"message": {"chat": {"id": 7}, "photo": [{}]}}
@@ -392,8 +401,23 @@ class HandleUpdateTests(unittest.TestCase):
         self._handle({"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 99},
                                                "photo": [{}], "caption": "what is this?"}})
         self.agent.run_turn.assert_called_once()
-        self.assertEqual(self.agent.run_turn.call_args.args[0], "what is this?")
+        self.assertEqual(self.agent.run_turn.call_args.args[0],
+                         ATTACHMENT_NOTE.format(kind="photo") + "\nwhat is this?")
         self.client.send_message.assert_called_once_with(1, "42")
+
+    def test_caption_that_looks_like_a_command_runs_as_a_turn(self):
+        self.agent.run_turn = Mock(return_value=TurnResult(
+            messages=[], stop_reason=RunStopReason.FINAL_RESPONSE, final_answer="ok"))
+        for caption in ("/new", "/compact"):
+            with self.subTest(caption=caption):
+                self.agent.run_turn.reset_mock()
+                self.client.reset_mock()
+                self._handle({"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 99},
+                                                       "photo": [{}], "caption": caption}})
+                self.agent.run_turn.assert_called_once()
+                self.assertEqual(self.active_sessions, {1: "1"})
+                self.assertEqual(self.compact_pending, {})
+                self.client.send_message.assert_called_once_with(1, "ok")
 
     def test_non_text_message_from_disallowed_sender_is_ignored(self):
         self._handle({"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 1},
