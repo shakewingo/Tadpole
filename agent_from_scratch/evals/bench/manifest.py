@@ -1,8 +1,11 @@
-"""Freeze the Stage 8 benchmark: everything that must not move once the test split runs.
+"""The benchmark freeze: everything that must not move between a freeze and the runs under it.
 
-Usage: python -m agent_from_scratch.evals freeze
-Writes evals/bench/manifest.json. Run it once, after the last skeleton lands, and again only
-when a deliberate change (a new skeleton, a limits default, a prompt file) needs a new freeze.
+A test session makes its own freeze with `python -m agent_from_scratch.evals dataset --output DIR`,
+from committed code, and every `bench --final` run is checked against DIR/manifest.json.
+
+`python -m agent_from_scratch.evals freeze` rewrites evals/bench/manifest.json instead. That file
+is the Stage 8 reference the tests hold the val and Stage 8 test tasks to; it is not a freeze a
+test run is checked against. Rewrite it only for a deliberate change to those tasks or the protocol.
 """
 
 import dataclasses
@@ -26,6 +29,30 @@ def _source_hashes() -> dict[str, str]:
     return {p.relative_to(ROOT).as_posix(): digest(p.read_bytes()) for p in ROOT.rglob("*")
            if p.is_file() and p.suffix in {".py", ".jinja"} and "__pycache__" not in p.parts
            and "tests" not in p.parts}
+
+
+def _worktree_clean() -> bool:
+    """No tracked file has uncommitted changes, so `git_revision` names the hashed sources."""
+    status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT,
+                            text=True, capture_output=True, check=True).stdout
+    return not status.strip()
+
+
+TASK_CONTENT_FIELDS = ("prompt_sha256", "expect_sha256", "fault_sha256", "tools_sha256",
+                       "workspace_sha256")
+
+
+def task_drift(new: dict, old: dict) -> list[str]:
+    """IDs of test tasks added, removed or changed since an earlier freeze; [] if the same.
+
+    Only task content is compared. Code may change between freezes; the test tasks may not.
+    """
+    def test_tasks(manifest: dict) -> dict[str, tuple]:
+        return {task["id"]: tuple(task[field] for field in TASK_CONTENT_FIELDS)
+                for task in manifest["tasks"] if task["split"] == "test"}
+
+    a, b = test_tasks(new), test_tasks(old)
+    return sorted(task_id for task_id in a.keys() | b.keys() if a.get(task_id) != b.get(task_id))
 
 
 def build_manifest() -> dict:
@@ -61,21 +88,25 @@ def build_manifest() -> dict:
            "limits": dataclasses.asdict(AgentLimits()), "memory": "off",
            "splits_sha256": digest((HERE / "splits.json").read_bytes()),
            "tasks": tasks, "verifier_sha256": digest((HERE / "verify.py").read_bytes()),
-           "git_revision": revision}
+           "git_revision": revision, "worktree_clean": _worktree_clean()}
 
 
 def save_manifest() -> None:
     MANIFEST_PATH.write_text(json.dumps(build_manifest(), indent=2, sort_keys=True) + "\n")
 
 
-def manifest_drift(path: Path | None = None) -> dict[str, tuple]:
-    """Fields that differ from the committed manifest; {} if unfrozen or unchanged.
+def manifest_drift(path: Path) -> dict[str, tuple | str]:
+    """Fields that differ from the freeze at `path`; {} if it is missing or unchanged.
 
     `git_revision` is recorded for provenance but never compared: committing the frozen
     manifest itself always changes HEAD, so gating on it would make every freeze self-drift
     against its own commit the moment it lands.
+
+    `worktree_clean` is not compared either. A freeze made with uncommitted changes is drift
+    in itself, since its git revision does not name the code it hashed; the current tree's
+    state alone is not, because any change to a hashed file already shows in its hash.
+    A manifest from before the field existed is not refused for lacking it.
     """
-    path = MANIFEST_PATH if path is None else path
     if not path.exists():
         return {}
     frozen = json.loads(path.read_text())
@@ -88,9 +119,12 @@ def manifest_drift(path: Path | None = None) -> dict[str, tuple]:
         raise ValueError("Duplicate manifest task ids.")
     current = build_manifest()
     drift = {key: (frozen.get(key), current.get(key)) for key in frozen.keys() | current.keys()
-            if key not in ("tasks", "git_revision") and frozen.get(key) != current.get(key)}
+            if key not in ("tasks", "git_revision", "worktree_clean")
+            and frozen.get(key) != current.get(key)}
     if {t["id"]: t for t in frozen["tasks"]} != {t["id"]: t for t in current["tasks"]}:
         drift["tasks"] = "task set or content changed"
+    if frozen.get("worktree_clean") is False:
+        drift["worktree_clean"] = "frozen with uncommitted changes; freeze from a clean clone"
     return drift
 
 

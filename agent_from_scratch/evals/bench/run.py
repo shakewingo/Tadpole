@@ -233,7 +233,7 @@ def main():
                         help="A LoRA adapter in llama.cpp's GGUF format (--backend llama_cpp)")
     parser.add_argument("--limits", default="{}", help='JSON AgentLimits overrides')
     parser.add_argument("--final", action="store_true",
-                        help="Required to run --split test; refuses manifest drift and a protocol mismatch")
+                        help="Required to run --split test; needs --manifest, refuses manifest drift and a protocol mismatch")
     parser.add_argument("--manifest", type=Path, help="The versioned dataset manifest a test run is checked against")
     args = parser.parse_args()
     overrides = parse_limits(parser, args.limits)
@@ -243,6 +243,8 @@ def main():
         parser.error("--backend teacher needs --student-gguf, an existing GGUF of the student model.")
     if args.split in ("test", "hardtest") and (not args.final or args.manifest is None or overrides):
         parser.error(f"The {args.split} split needs --final and --manifest; limit overrides are not allowed.")
+    if args.final and args.manifest is None:
+        parser.error("--final needs --manifest: the freeze made for this session by `dataset --output DIR`.")
     if args.manifest is not None and not args.manifest.is_file():
         parser.error("The supplied manifest does not exist.")
     if args.adapter and args.backend != "vllm":
@@ -256,7 +258,7 @@ def main():
         if len(entries) != len(wanted):
             parser.error("Unknown task ID in --tasks.")
     try:
-        drift = (manifest_drift(args.manifest) if args.manifest is not None else manifest_drift()) if args.final else {}
+        drift = manifest_drift(args.manifest) if args.final else {}
     except (ValueError, OSError) as error:
         parser.error(f"Invalid manifest: {error}")
     if drift:

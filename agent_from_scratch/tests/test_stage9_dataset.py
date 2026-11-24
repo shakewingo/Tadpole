@@ -60,6 +60,28 @@ class DatasetCommandTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(sentinel.read_text(), "keep")
 
+    def test_against_a_freeze_with_other_test_tasks_stops_before_writing(self):
+        with TemporaryDirectory() as temporary:
+            earlier = build_manifest()
+            changed = next(task for task in earlier["tasks"] if task["split"] == "test")
+            changed["prompt_sha256"] = "0" * 64
+            old = Path(temporary) / "old.json"
+            old.write_text(json.dumps(earlier))
+            out = Path(temporary) / "data"
+            result = self.command("--split", "test", "--output", out, "--against", old)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn(changed["id"], result.stderr)
+            self.assertFalse(out.exists())
+
+    def test_against_a_freeze_with_the_same_test_tasks_generates_the_data(self):
+        with TemporaryDirectory() as temporary:
+            old = Path(temporary) / "old.json"
+            old.write_text(json.dumps(build_manifest()))
+            out = Path(temporary) / "data"
+            result = self.command("--split", "test", "--output", out, "--against", old)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((out / "manifest.json").is_file())
+
     def test_test_split_runs_require_final_and_a_manifest(self):
         with TemporaryDirectory() as temporary, patch.object(run, "load_model") as model:
             manifest = Path(temporary) / "manifest.json"
@@ -85,6 +107,17 @@ class DatasetCommandTests(unittest.TestCase):
                 run.main()
             model.assert_not_called()
 
+    def test_final_needs_a_manifest_on_every_split(self):
+        # Without --manifest there is no freeze made for this session to compare against; the
+        # committed Stage 8 manifest is a test baseline, not one.
+        with TemporaryDirectory() as temporary, patch.object(run, "load_model") as model, \
+                patch("agent_from_scratch.evals.bench.manifest.manifest_drift", return_value={}):
+            args = ["bench", "--split", "val", "--final", "--output", str(Path(temporary) / "run")]
+            with patch.object(sys, "argv", args), self.assertRaises(SystemExit) as error:
+                run.main()
+            self.assertEqual(error.exception.code, 2)
+            model.assert_not_called()
+
     def test_train_and_versioned_test_reach_the_existing_runner(self):
         for split in ("train", "test"):
             with self.subTest(split=split), TemporaryDirectory() as temporary:
@@ -97,7 +130,9 @@ class DatasetCommandTests(unittest.TestCase):
                 model.settings.return_value = {"backend": "vllm", "model_root": BENCH_MODEL["id"],
                                                "n_ctx": BENCH_N_CTX, **BENCH_DECODING}
                 manifest = root / "manifest.json"
-                manifest.write_text(json.dumps(build_manifest()))
+                # Stands for a freeze made from committed code, whatever state this checkout is in.
+                with patch("agent_from_scratch.evals.bench.manifest._worktree_clean", return_value=True):
+                    manifest.write_text(json.dumps(build_manifest()))
                 output = root / "run"
                 args = ["bench", "--split", split, "--tasks", ctx.id, "--backend", "vllm",
                         "--output", str(output)]

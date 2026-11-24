@@ -385,11 +385,15 @@ pipeline. The evaluation procedure is:
    `uv pip install vllm==0.30.0 peft -r agent_from_scratch/requirements.txt`, and the adapters
    under `outputs/`, e.g. `hf download Shakewin/tadpole-qwen3-4b-ei-3 --local-dir outputs/ei-3`.
 2. **Freeze the tasks and run the gates.** Every workspace is rebuilt from its seed, so there is
-   no state to reset by hand:
+   no state to reset by hand. Freeze from committed code: the manifest hashes the working tree,
+   and `--final` refuses a freeze made with uncommitted changes.
 
    ```sh
    python -m agent_from_scratch.evals dataset --output outputs/NEW_DATA --check   # gates_passed: true
    ```
+
+   Add `--against EARLIER/manifest.json` to require the same test tasks as an earlier freeze;
+   it stops before writing anything if one was added, removed or changed.
 
 3. **Reload the adapters**: the [server command](#the-server-command) with one
    `--lora-modules NAME=DIR` per adapter,
@@ -401,7 +405,9 @@ pipeline. The evaluation procedure is:
      --manifest outputs/NEW_DATA/manifest.json --seed 0 --adapter NAME --output outputs/NEW_TEST_S0
    ```
 
-   `--final` refuses to run if the code, prompts, tasks or decoding differ from the freeze.
+   `--final` needs `--manifest`, and refuses to run if the code, prompts, tasks or decoding
+   differ from that freeze. The committed `bench/manifest.json` is the Stage 8 reference the unit
+   tests check against, not a freeze for test runs.
    Sampling differs between server sessions, so a rerun matches pass@1 closely, not exactly.
 5. **The tables**, from one run per seed for each model:
 
