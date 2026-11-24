@@ -28,6 +28,11 @@ class PlanTool(Tool):
         self.plan = plan
         return {"tasks": len(plan), "in_progress": sum(task["status"] == "in_progress" for task in plan)}
 
+    @property
+    def done(self) -> bool:
+        """True when the plan has items and every one is completed."""
+        return bool(self.plan) and all(task["status"] == "completed" for task in self.plan)
+
     def render(self) -> str:
         """Return the plan as one '[status] content' line per task."""
         return "\n".join(f"[{task['status']}] {task['content']}" for task in self.plan)
