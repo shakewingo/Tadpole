@@ -10,8 +10,9 @@ from unittest.mock import Mock, patch
 from agent_from_scratch.agent import Agent
 from agent_from_scratch.config import AgentLimits
 from agent_from_scratch.context import ContextState
-from agent_from_scratch.llm import LLM
-from agent_from_scratch.tests.test_turn import answer
+from agent_from_scratch.llm import LLM, LLMResponse, ResponseType
+from agent_from_scratch.tests.test_turn import answer, call
+from agent_from_scratch.tools.base import ToolCall, ToolResult
 from agent_from_scratch.tools.plan import PlanTool
 
 
@@ -53,6 +54,55 @@ class PlanTests(unittest.TestCase):
             self.assertEqual(tool.done, done, statuses)
         tool.invoke({"plan": [{"content": "Read config\nthen report", "status": "completed"}]})
         self.assertTrue(tool.done)
+
+    def test_parse_rendered_round_trips_including_multiline_content(self):
+        tool = PlanTool()
+        tool.invoke({"plan": [{"content": "Read config\nthen report", "status": "completed"},
+                              {"content": "Report", "status": "pending"}]})
+        self.assertEqual(PlanTool.parse_rendered(tool.render()),
+                         [{"content": "Read config\nthen report", "status": "completed"},
+                          {"content": "Report", "status": "pending"}])
+        self.assertEqual(PlanTool.parse_rendered(""), [])
+
+    def test_completed_item_with_no_tool_call_since_it_appeared_is_flagged(self):
+        tool = PlanTool()
+        # Appears already completed: no tool call could have done the work.
+        result = tool.invoke({"plan": [{"content": "Add numbers", "status": "completed"}]})
+        self.assertTrue(result.ok)
+        self.assertIn("no tool call since", result.output["warning"])
+        self.assertIn("Add numbers", result.output["warning"])
+        # Appears pending, then completed with still no tool call: flagged too.
+        tool = PlanTool()
+        tool.invoke({"plan": [{"content": "Add numbers", "status": "pending"}]})
+        result = tool.invoke({"plan": [{"content": "Add numbers", "status": "completed"}]})
+        self.assertIn("no tool call since", result.output["warning"])
+
+    def test_completed_item_after_a_tool_call_is_not_flagged(self):
+        tool = PlanTool()
+        tool.invoke({"plan": [{"content": "Add numbers", "status": "in_progress"}]})
+        tool.note_tool_call()
+        result = tool.invoke({"plan": [{"content": "Add numbers", "status": "completed"}]})
+        self.assertTrue(result.ok)
+        self.assertNotIn("warning", result.output)
+        # A tool call that ran before the item appeared is no evidence for it.
+        tool = PlanTool()
+        tool.note_tool_call()
+        result = tool.invoke({"plan": [{"content": "Add numbers", "status": "completed"}]})
+        self.assertIn("no tool call since", result.output["warning"])
+
+    def test_carried_over_item_is_not_flagged(self):
+        tool = PlanTool()
+        tool.seed_existing(PlanTool.parse_rendered("[pending] Add numbers"))
+        result = tool.invoke({"plan": [{"content": "Add numbers", "status": "completed"}]})
+        self.assertTrue(result.ok)
+        self.assertNotIn("warning", result.output)
+
+    def test_reopened_item_is_flagged_again(self):
+        tool = PlanTool()
+        tool.invoke({"plan": [{"content": "Add numbers", "status": "completed"}]})
+        tool.invoke({"plan": [{"content": "Add numbers", "status": "pending"}]})
+        result = tool.invoke({"plan": [{"content": "Add numbers", "status": "completed"}]})
+        self.assertIn("no tool call since", result.output["warning"])
 
     def test_completed_plan_drops_the_reminder(self):
         raw = [{"role": "system", "content": "rules"}, {"role": "user", "content": "go"}]
@@ -106,6 +156,48 @@ class PlanTurnTests(unittest.TestCase):
         self.assertEqual(sum(m["role"] == "system" for m in self.seen[1]), 2)
         self.assertFalse(any(m["role"] == "system" for m in result.messages[1:]))
         self.assertEqual((result.stop_reason, result.final_answer), ("final_response", "4"))
+
+    def test_completion_claimed_before_any_work_is_warned(self):
+        self.agent.limits = replace(AgentLimits(), planning=True)
+        self.script(plan_call("completed"), answer("4"))
+        result = self.agent.run_turn("2+2")
+        tool_messages = [m for m in result.messages if m["role"] == "tool"]
+        self.assertEqual(len(tool_messages), 1)
+        self.assertIn("no tool call since", tool_messages[0]["content"])
+        self.assertIn("Add numbers", tool_messages[0]["content"])
+        self.assertEqual((result.stop_reason, result.final_answer), ("final_response", "4"))
+
+    def test_completion_after_a_tool_call_is_not_warned(self):
+        self.agent.limits = replace(AgentLimits(), planning=True)
+        self.script(plan_call(), call(), plan_call("completed"), answer("4"))
+        with patch.object(self.agent, "execute_tool",
+                          return_value=ToolResult(call_id="", tool_name="calculator",
+                                                  ok=True, output={})) as execute:
+            result = self.agent.run_turn("2+2")
+        execute.assert_called_once()
+        tool_messages = [m for m in result.messages if m["role"] == "tool"]
+        self.assertEqual(len(tool_messages), 3)
+        self.assertNotIn("no tool call since", tool_messages[2]["content"])
+        self.assertEqual((result.stop_reason, result.final_answer), ("final_response", "4"))
+
+    def test_completion_in_the_same_response_as_the_work_call_is_warned(self):
+        # The incident shape from issue #3: update_plan comes first in the
+        # batch, so no tool call has run when the item is marked completed.
+        self.agent.limits = replace(AgentLimits(), planning=True)
+        batch = LLMResponse(role="assistant", content="", type=ResponseType.tool_call,
+                            tool_calls=[ToolCall("update_plan",
+                                                 {"plan": [{"content": "Add numbers",
+                                                            "status": "completed"}]}, "c1"),
+                                        ToolCall("calculator",
+                                                 {"operation": "add", "left": 2, "right": 2}, "c2")])
+        self.script(batch, answer("4"))
+        with patch.object(self.agent, "execute_tool",
+                          return_value=ToolResult(call_id="", tool_name="calculator",
+                                                  ok=True, output={})):
+            result = self.agent.run_turn("2+2")
+        tool_messages = [m for m in result.messages if m["role"] == "tool"]
+        self.assertEqual(len(tool_messages), 2)
+        self.assertIn("no tool call since", tool_messages[0]["content"])
 
     def test_planning_off_adds_no_tool_or_reminder(self):
         self.script(answer("4"))

@@ -212,6 +212,10 @@ class Agent:
         tool_attempts = 0
         used_ids = {call["id"] for m in raw_messages for call in m.get("tool_calls", [])}
         planner = PlanTool() if state.plan is not None else None
+        if planner is not None and state.plan:
+            # Items carried over from an earlier turn may already have been
+            # worked on; only items first seen this turn can be flagged.
+            planner.seed_existing(PlanTool.parse_rendered(state.plan))
 
         def repeated_failure(key: tuple) -> bool:
             nonlocal last_failure, failure_count
@@ -343,6 +347,8 @@ class Agent:
                             state.plan, state.plan_done = planner.render(), planner.done
                     else:
                         tool_result = self.execute_tool(call.name, call.arguments, call.call_id)
+                        if planner is not None:
+                            planner.note_tool_call()
                     if tool_result.ok:
                         logger.debug("Tool executed successfully: {} ({})", tool_result.tool_name, tool_result.call_id)
                     else:
