@@ -343,6 +343,8 @@ class Agent:
                             state.plan, state.plan_done = planner.render(), planner.done
                     else:
                         tool_result = self.execute_tool(call.name, call.arguments, call.call_id)
+                        if planner is not None:
+                            planner.record_call(tool_result.ok)
                     if tool_result.ok:
                         logger.debug("Tool executed successfully: {} ({})", tool_result.tool_name, tool_result.call_id)
                     else:

@@ -10,15 +10,28 @@ from unittest.mock import Mock, patch
 from agent_from_scratch.agent import Agent
 from agent_from_scratch.config import AgentLimits
 from agent_from_scratch.context import ContextState
-from agent_from_scratch.llm import LLM
-from agent_from_scratch.tests.test_turn import answer
+from agent_from_scratch.llm import LLM, LLMResponse, ResponseType
+from agent_from_scratch.tests.test_turn import answer, call
+from agent_from_scratch.tools.base import ToolCall, ToolErrorCode
 from agent_from_scratch.tools.plan import PlanTool
+
+CALCULATOR = ("calculator", {"operation": "add", "left": 2, "right": 2})
 
 
 def plan_call(status="in_progress"):
     return LLM.parse_response({"choices": [{"message": {"role": "assistant", "content":
         '<tool_call>{"name": "update_plan", "arguments": {"plan": '
         f'[{{"content": "Add numbers", "status": "{status}"}}]}}}}</tool_call>'}}]})
+
+
+def plan_args(status):
+    return ("update_plan", {"plan": [{"content": "Add numbers", "status": status}]})
+
+
+def batch(*calls):
+    """One response carrying several tool calls, run in order."""
+    return LLMResponse(role="assistant", content="", type=ResponseType.tool_call,
+                       tool_calls=[ToolCall(name, arguments) for name, arguments in calls])
 
 
 class PlanTests(unittest.TestCase):
@@ -48,11 +61,9 @@ class PlanTests(unittest.TestCase):
         for statuses, done in [(["completed", "completed"], True),
                                (["completed", "pending"], False),
                                (["in_progress", "completed"], False)]:
-            tool.invoke({"plan": [{"content": f"task {i}", "status": s}
-                                  for i, s in enumerate(statuses)]})
+            # The property only; how items may reach completed is tested below.
+            tool.plan = [{"content": f"task {i}", "status": s} for i, s in enumerate(statuses)]
             self.assertEqual(tool.done, done, statuses)
-        tool.invoke({"plan": [{"content": "Read config\nthen report", "status": "completed"}]})
-        self.assertTrue(tool.done)
 
     def test_completed_plan_drops_the_reminder(self):
         raw = [{"role": "system", "content": "rules"}, {"role": "user", "content": "go"}]
@@ -66,6 +77,101 @@ class PlanTests(unittest.TestCase):
                              plan="[completed] Read config\n[pending] Report")
         self.assertIn("[Current plan", state.messages()[-1]["content"])
         self.assertIn("[pending] Report", state.messages()[-1]["content"])
+
+
+def update(tool, *items):
+    return tool.invoke({"plan": [{"content": content, "status": status} for content, status in items]})
+
+
+class PlanCompletionTests(unittest.TestCase):
+    """Status is self-report; only the in_progress item, after a successful call, completes (issue #3)."""
+
+    def assertRefused(self, result, reason, tool, rendered):
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, ToolErrorCode.DENIED)
+        self.assertIn(reason, result.error_message)
+        self.assertEqual(tool.render(), rendered)  # unchanged
+
+    def test_completion_after_a_successful_call_is_accepted(self):
+        tool = PlanTool()
+        update(tool, ("Add numbers", "in_progress"))
+        tool.record_call(True)
+        self.assertTrue(update(tool, ("Add numbers", "completed")).ok)
+        self.assertTrue(tool.done)
+
+    def test_completion_with_no_call_yet_is_refused(self):
+        tool = PlanTool()
+        update(tool, ("Add numbers", "in_progress"))
+        self.assertRefused(update(tool, ("Add numbers", "completed")),
+                           "no tool call since it became in_progress", tool, "[in_progress] Add numbers")
+        self.assertFalse(tool.done)
+
+    def test_pending_item_cannot_jump_to_completed(self):
+        tool = PlanTool()
+        update(tool, ("Add numbers", "pending"))
+        tool.record_call(True)
+        self.assertRefused(update(tool, ("Add numbers", "completed")),
+                           "only the in_progress item", tool, "[pending] Add numbers")
+        tool = PlanTool()
+        self.assertRefused(update(tool, ("Add numbers", "completed")), "only the in_progress item", tool, "")
+
+    def test_one_call_completes_only_the_item_in_progress(self):
+        tool = PlanTool()
+        update(tool, ("A", "in_progress"), ("B", "pending"), ("C", "pending"))
+        tool.record_call(True)
+        self.assertRefused(update(tool, ("A", "completed"), ("B", "completed"), ("C", "completed")),
+                           "'B' cannot be completed", tool, "[in_progress] A\n[pending] B\n[pending] C")
+        self.assertTrue(update(tool, ("A", "completed"), ("B", "pending"), ("C", "pending")).ok)
+
+    def test_last_call_failed_blocks_completion(self):
+        tool = PlanTool()
+        update(tool, ("Run tests", "in_progress"))
+        tool.record_call(True)
+        tool.record_call(False)  # e.g. a shell command that exited non-zero
+        self.assertRefused(update(tool, ("Run tests", "completed")),
+                           "the last tool call since it became in_progress failed",
+                           tool, "[in_progress] Run tests")
+        tool.record_call(True)
+        self.assertTrue(update(tool, ("Run tests", "completed")).ok)
+
+    def test_switching_items_clears_the_evidence(self):
+        tool = PlanTool()
+        update(tool, ("A", "in_progress"), ("B", "pending"))
+        tool.record_call(True)
+        update(tool, ("A", "pending"), ("B", "in_progress"))
+        self.assertRefused(update(tool, ("A", "pending"), ("B", "completed")),
+                           "no tool call", tool, "[pending] A\n[in_progress] B")
+        # Completing one item and starting the next in one update is the normal step.
+        tool = PlanTool()
+        update(tool, ("A", "in_progress"), ("B", "pending"))
+        tool.record_call(True)
+        self.assertTrue(update(tool, ("A", "completed"), ("B", "in_progress")).ok)
+        self.assertRefused(update(tool, ("A", "completed"), ("B", "completed")),
+                           "'B' cannot be completed: no tool call", tool, "[completed] A\n[in_progress] B")
+
+    def test_resending_a_completed_item_is_accepted(self):
+        tool = PlanTool()
+        update(tool, ("A", "in_progress"), ("B", "pending"))
+        tool.record_call(True)
+        update(tool, ("A", "completed"), ("B", "pending"))
+        self.assertTrue(update(tool, ("A", "completed"), ("B", "in_progress")).ok)
+        self.assertTrue(update(tool, ("A", "completed"), ("B", "in_progress")).ok)
+
+    def test_reopened_item_needs_a_new_successful_call(self):
+        tool = PlanTool()
+        update(tool, ("A", "in_progress"))
+        tool.record_call(True)
+        update(tool, ("A", "completed"))
+        update(tool, ("A", "in_progress"))
+        self.assertRefused(update(tool, ("A", "completed")), "no tool call", tool, "[in_progress] A")
+        tool.record_call(True)
+        self.assertTrue(update(tool, ("A", "completed")).ok)
+
+    def test_two_items_in_progress_are_refused(self):
+        tool = PlanTool()
+        update(tool, ("A", "pending"), ("B", "pending"))
+        self.assertRefused(update(tool, ("A", "in_progress"), ("B", "in_progress")),
+                           "At most one item may be in_progress", tool, "[pending] A\n[pending] B")
 
 
 class PlanTurnTests(unittest.TestCase):
@@ -105,6 +211,36 @@ class PlanTurnTests(unittest.TestCase):
         self.assertIn("[in_progress] Add numbers", self.seen[1][-1]["content"])
         self.assertEqual(sum(m["role"] == "system" for m in self.seen[1]), 2)
         self.assertFalse(any(m["role"] == "system" for m in result.messages[1:]))
+        self.assertEqual((result.stop_reason, result.final_answer), ("final_response", "4"))
+
+    def test_completion_before_the_work_call_is_refused(self):
+        # The incident from issue #3: update_plan comes first in the batch.
+        self.agent.limits = replace(AgentLimits(), planning=True)
+        self.script(batch(plan_args("completed"), CALCULATOR), answer("4"))
+        result = self.agent.run_turn("2+2")
+        tool_messages = [m for m in result.messages if m["role"] == "tool"]
+        self.assertIn("cannot be completed", tool_messages[0]["content"])
+        self.assertIn("skipped", tool_messages[1]["content"])  # the batch stops at a failure
+        self.assertIn("not created a plan", self.seen[1][-1]["content"])
+        self.assertEqual((result.stop_reason, result.final_answer), ("final_response", "4"))
+
+    def test_start_work_and_complete_in_one_response_is_accepted(self):
+        self.agent.limits = replace(AgentLimits(), planning=True)
+        self.script(batch(plan_args("in_progress"), CALCULATOR, plan_args("completed")), answer("4"))
+        result = self.agent.run_turn("2+2")
+        tool_messages = [m for m in result.messages if m["role"] == "tool"]
+        self.assertEqual(len(tool_messages), 3)
+        self.assertTrue(all('"ok": true' in m["content"] for m in tool_messages))
+        self.assertEqual(self.seen[1][-1]["role"], "tool")  # completed plan: no reminder (#2)
+        self.assertEqual((result.stop_reason, result.final_answer), ("final_response", "4"))
+
+    def test_completion_after_a_failed_call_is_refused(self):
+        self.agent.limits = replace(AgentLimits(), planning=True)
+        self.script(plan_call(), call(right=0, operation="divide"), plan_call("completed"), answer("4"))
+        result = self.agent.run_turn("2+2")
+        tool_messages = [m for m in result.messages if m["role"] == "tool"]
+        self.assertIn("last tool call since it became in_progress failed", tool_messages[2]["content"])
+        self.assertIn("[in_progress] Add numbers", self.seen[3][-1]["content"])  # reminder stays
         self.assertEqual((result.stop_reason, result.final_answer), ("final_response", "4"))
 
     def test_planning_off_adds_no_tool_or_reminder(self):
