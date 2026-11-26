@@ -37,6 +37,36 @@ class DatasetCommandTests(unittest.TestCase):
                 self.assertEqual(task["split"], "train")
                 self.assertNotIn("task.json", [p.name for p in (path.parent / "workspace").iterdir()])
 
+    def test_generates_only_the_val_split(self):
+        with TemporaryDirectory() as temporary:
+            out = Path(temporary) / "data"
+            result = self.command("--split", "val", "--output", out)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            metadata = json.loads((out / "metadata.json").read_text())
+            # 144 validation tasks; the default (train + test) is unchanged.
+            val = len(run.specs("val"))
+            self.assertGreaterEqual(val, 144)
+            self.assertEqual(metadata["task_counts"], {"val": val})
+            tasks = list((out / "tasks").glob("*/task.json"))
+            self.assertEqual(len(tasks), val)
+            for path in tasks:
+                task = json.loads(path.read_text())
+                self.assertEqual(task["split"], "val")
+
+    def test_scripted_check_gates_the_hardtest_split(self):
+        with TemporaryDirectory() as temporary:
+            out = Path(temporary) / "data"
+            result = self.command("--split", "hardtest", "--output", out, "--check")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads((out / "summary.json").read_text())
+            # 80 hard-test tasks, gated the same way as the default train + test run.
+            hardtest = len(run.specs("hardtest"))
+            self.assertGreaterEqual(hardtest, 80)
+            self.assertEqual(summary["correct"], {"passed": hardtest, "attempts": hardtest})
+            self.assertEqual(summary["answer_only"], {"passed": 0, "attempts": hardtest})
+            self.assertEqual(summary["wrong_answer"], {"passed": 0, "attempts": hardtest})
+            self.assertTrue(summary["gates_passed"])
+
     def test_scripted_check_accepts_solutions_and_rejects_negative_runs(self):
         with TemporaryDirectory() as temporary:
             out = Path(temporary) / "data"

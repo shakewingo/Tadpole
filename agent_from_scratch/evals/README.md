@@ -133,10 +133,10 @@ Generate the train and test sets, with their gates, without a model:
 python -m agent_from_scratch.evals dataset --output outputs/NEW_DATA --check
 ```
 
-The dataset exporter currently selects only `train` and `test` (640 tasks in total).
-It does not export or gate the 144 validation or 80 hard-test tasks. Those generators are
-covered by the unit suite, and `bench --split val` / `bench --split hardtest` run them with a
-model. The generated manifest records all splits even though the exported workspaces do not.
+The dataset exporter selects `train` and `test` by default (640 tasks in total).
+`--split val` and `--split hardtest` export and gate the 144 validation and 80 hard-test
+tasks the same way. `bench --split val` / `bench --split hardtest` run them with a model.
+The generated manifest records all splits even though the exported workspaces do not.
 
 Each task's `workspace/` holds only its inputs; `task.json` beside it holds the private contract.
 Never send the contract or the scripted solution to a model. A scripted pass checks the
