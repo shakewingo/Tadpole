@@ -1,6 +1,6 @@
 """Generate Stage 9 fixtures and optional scripted gates, without loading a model.
 
-Usage: python -m agent_from_scratch.evals dataset --output DIR [--split train|test|all] [--check]
+Usage: python -m agent_from_scratch.evals dataset --output DIR [--split train|val|test|hardtest|all] [--check]
                                                   [--against EARLIER_MANIFEST]
 Contracts live outside each workspace; only workspace files and Task.prompt reach the agent.
 DIR/manifest.json is the freeze that `bench --final --manifest` runs are checked against.
@@ -52,8 +52,11 @@ def generate(out: Path, split: str = "all", check: bool = False, against: dict |
         raise ValueError("Output must be outside the source package.")
     if out.exists():
         raise ValueError("Output already exists; evidence is never overwritten.")
-    entries = [(s, ctx) for s, ctx in specs() if ctx.split in ("train", "test")
-               and (split == "all" or ctx.split == split)]
+    # "all" keeps exporting only train and test: the frozen manifests and the
+    # training-data metadata depend on that default. val and hardtest are
+    # exported only when named explicitly.
+    selected = ("train", "test") if split == "all" else (split,)
+    entries = [(s, ctx) for s, ctx in specs() if ctx.split in selected]
     if not entries:
         raise ValueError("No tasks selected.")
     manifest = build_manifest()
@@ -100,7 +103,7 @@ def generate(out: Path, split: str = "all", check: bool = False, against: dict |
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--split", choices=("train", "test", "all"), default="all")
+    parser.add_argument("--split", choices=("train", "val", "test", "hardtest", "all"), default="all")
     parser.add_argument("--check", action="store_true", help="Run correct and deliberately failing scripted fixtures")
     parser.add_argument("--against", type=Path,
                         help="An earlier freeze whose test tasks this one must match exactly")
